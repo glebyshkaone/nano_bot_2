@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-logger.info("Starting nano-bot (UI + refs + tokens + admin)")
+logger.info("Starting nano-bot (UI + refs + tokens + admin + notifications)")
 
 # ----------------------------------------
 # Переменные окружения
@@ -352,10 +352,26 @@ async def add_tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     add_tokens(target_id, amount)
+    new_balance = get_balance(target_id)
+
+    # ответ админу
     await update.message.reply_text(
         f"✅ Пользователю {target_id} начислено {amount} токенов.\n"
-        f"Новый баланс: {get_balance(target_id)}"
+        f"Новый баланс: {new_balance}"
     )
+
+    # уведомление пользователю
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=(
+                f"🎉 Ваш баланс пополнен на {amount} токенов.\n"
+                f"Текущий баланс: {new_balance} токенов.\n\n"
+                "Можете продолжать генерации в боте 🙂"
+            ),
+        )
+    except Exception as e:
+        logger.warning("Не удалось отправить уведомление пользователю %s: %s", target_id, e)
 
 
 # ----------------------------------------
@@ -555,8 +571,27 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         add_tokens(uid, amount)
         new_balance = get_balance(uid)
-        await query.answer(f"Начислено {amount} токенов (баланс {new_balance})", show_alert=False)
 
+        # тост админу
+        await query.answer(
+            f"Начислено {amount} токенов (баланс {new_balance})",
+            show_alert=False,
+        )
+
+        # уведомление пользователю
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=(
+                    f"🎉 Ваш баланс пополнен на {amount} токенов.\n"
+                    f"Текущий баланс: {new_balance} токенов.\n\n"
+                    "Можете продолжать генерации в боте 🙂"
+                ),
+            )
+        except Exception as e:
+            logger.warning("Не удалось отправить уведомление пользователю %s: %s", uid, e)
+
+        # обновляем карточку
         text, kb = build_admin_user_detail(uid, page)
         await query.message.edit_text(text, reply_markup=kb)
         return
