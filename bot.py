@@ -29,7 +29,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-logger.info("Starting nano-bot (UI + replicate.run)")
+logger.info("Starting nano-bot (UI + replicate.run + refs)")
 
 # ----------------------------------------
 # Переменные окружения
@@ -43,7 +43,6 @@ if not TELEGRAM_BOT_TOKEN:
 if not REPLICATE_API_TOKEN:
     raise ValueError("REPLICATE_API_TOKEN not set")
 
-# Логируем маску токена Replicate, чтобы проверить, что Railway реально подхватил нужный
 logger.info(
     "REPLICATE_API_TOKEN prefix: %s..., length: %s",
     REPLICATE_API_TOKEN[:8],
@@ -75,7 +74,8 @@ def format_settings_text(settings: dict) -> str:
         f"• Разрешение: {settings['resolution']}\n"
         f"• Формат: {settings['output_format']}\n"
         f"• Фильтр безопасности: {settings['safety_filter_level']}\n\n"
-        "Отправь текстовый промт — я сгенерирую картинку по этим настройкам."
+        "Отправь текстовый промт — я сгенерирую картинку по этим настройкам.\n"
+        "Можешь также отправить фото с подписью — оно будет использовано как референс."
     )
 
 
@@ -177,7 +177,7 @@ def build_reply_keyboard() -> ReplyKeyboardMarkup:
 
 
 # ----------------------------------------
-# Хендлеры команд
+# Команды
 # ----------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings = get_user_settings(context)
@@ -185,6 +185,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Привет! Я nano-bot 🤖\n\n"
         "Отправь мне текстовый промт — я сгенерирую картинку через "
         "google/nano-banana-pro на Replicate.\n\n"
+        "Можешь отправить фото с подписью — я использую его как референс (image_input).\n\n"
         "Используй кнопки снизу или команду /menu, чтобы настроить параметры."
     )
     await update.message.reply_text(
@@ -207,15 +208,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Как пользоваться ботом:\n\n"
         "1. Нажми /menu или кнопку «🎛 Меню».\n"
         "2. В настройках выбери соотношение сторон, разрешение, формат и уровень фильтра.\n"
-        "3. Отправь текстовый промт (на русском или английском).\n"
-        "4. Я верну сгенерированное изображение.\n\n"
+        "3. Отправь текстовый промт.\n"
+        "4. Либо отправь фото с подписью — фото будет передано в nano-banana как image_input.\n\n"
         "Сейчас это MVP: одна модель (google/nano-banana-pro)."
     )
     await update.message.reply_text(text)
 
 
 # ----------------------------------------
-# Обработка кнопок reply-клавиатуры
+# Обработка reply-кнопок
 # ----------------------------------------
 async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.message.text or "").strip()
@@ -230,12 +231,12 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         await help_command(update, context)
         return
 
-    # Если это не кнопка — считаем, что это промт для генерации
-    await handle_prompt(update, context)
+    # Всё остальное — считаем текстовым промтом
+    await handle_text_prompt(update, context)
 
 
 # ----------------------------------------
-# CallbackQuery (инлайн-кнопки настроек)
+# Инлайн-кнопки настроек
 # ----------------------------------------
 async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -291,25 +292,20 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 # ----------------------------------------
-# Основной хендлер промта
+# Универсальная функция генерации
 # ----------------------------------------
-async def handle_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.text:
-        return
-
-    prompt = update.message.text.strip()
-
-    # Команды отдельно обрабатываются
-    if prompt.startswith("/"):
-        return
-
-    if not prompt:
-        await update.message.reply_text("Отправь текстовый промт 🙏")
-        return
-
+async def generate_with_nano_banana(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    prompt: str,
+    image_urls: list[str] | None = None,
+) -> None:
+    """Вызов nano-banana с учетом настроек и опциональных референсов."""
     settings = get_user_settings(context)
+
     logger.info("Prompt: %s", prompt)
     logger.info("Settings: %s", settings)
+    logger.info("Image refs: %s", image_urls)
 
     await update.message.reply_text("Генерирую картинку, подожди 5–20 секунд… ⚙️")
 
@@ -322,7 +318,10 @@ async def handle_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "safety_filter_level": settings["safety_filter_level"],
         }
 
-        # ВАЖНО: используем классический run без client=
+        # если есть референсы — добавляем image_input
+        if image_urls:
+            input_payload["image_input"] = image_urls
+
         output = replicate.run(
             "google/nano-banana-pro",
             input=input_payload,
@@ -366,6 +365,47 @@ async def handle_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 # ----------------------------------------
+# Текстовый промт (без фото)
+# ----------------------------------------
+async def handle_text_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.text:
+        return
+
+    prompt = update.message.text.strip()
+    if prompt.startswith("/"):
+        return
+
+    if not prompt:
+        await update.message.reply_text("Отправь текстовый промт 🙏")
+        return
+
+    await generate_with_nano_banana(update, context, prompt, image_urls=None)
+
+
+# ----------------------------------------
+# Фото + caption как референс
+# ----------------------------------------
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    if not message or not message.photo:
+        return
+
+    # Берем самое большое фото (последний элемент списка)
+    photo = message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+
+    # Telegram даёт прямой URL к файлу, его можно отдать Replicate
+    image_url = file.file_path
+
+    # caption используем как промт, если он есть
+    prompt = (message.caption or "").strip()
+    if not prompt:
+        prompt = "image to image generation"
+
+    await generate_with_nano_banana(update, context, prompt, image_urls=[image_url])
+
+
+# ----------------------------------------
 # Точка входа
 # ----------------------------------------
 def main() -> None:
@@ -378,7 +418,10 @@ def main() -> None:
     # Инлайн-кнопки настроек
     application.add_handler(CallbackQueryHandler(settings_callback))
 
-    # Все текстовые сообщения (кнопки + промты)
+    # Фото (референсы)
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+    # Текстовые сообщения (reply-кнопки + обычный текст-промт)
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_buttons)
     )
