@@ -8,6 +8,8 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -41,15 +43,12 @@ if not TELEGRAM_BOT_TOKEN:
 if not REPLICATE_API_TOKEN:
     raise ValueError("REPLICATE_API_TOKEN not set")
 
-# Логируем маскированный токен Replicate, чтобы проверить, что Railway реально подхватил нужный
+# Логируем маску токена Replicate, чтобы проверить, что Railway реально подхватил нужный
 logger.info(
     "REPLICATE_API_TOKEN prefix: %s..., length: %s",
     REPLICATE_API_TOKEN[:8],
     len(REPLICATE_API_TOKEN),
 )
-
-# Клиент Replicate
-replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
 
 # ----------------------------------------
 # Настройки по умолчанию
@@ -164,6 +163,19 @@ def build_settings_keyboard(settings: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
+def build_reply_keyboard() -> ReplyKeyboardMarkup:
+    keyboard = [
+        [
+            KeyboardButton("🚀 Старт"),
+            KeyboardButton("🎛 Меню"),
+        ],
+        [
+            KeyboardButton("ℹ Помощь"),
+        ],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
 # ----------------------------------------
 # Хендлеры команд
 # ----------------------------------------
@@ -173,25 +185,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Привет! Я nano-bot 🤖\n\n"
         "Отправь мне текстовый промт — я сгенерирую картинку через "
         "google/nano-banana-pro на Replicate.\n\n"
-        "Нажми «🎛 Настройки генерации», чтобы поменять параметры."
+        "Используй кнопки снизу или команду /menu, чтобы настроить параметры."
     )
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "🎛 Настройки генерации",
-                    callback_data="open|settings",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "ℹ Помощь",
-                    callback_data="open|help",
-                )
-            ],
-        ]
+    await update.message.reply_text(
+        text,
+        reply_markup=build_reply_keyboard(),
     )
-    await update.message.reply_text(text, reply_markup=keyboard)
     await update.message.reply_text(format_settings_text(settings))
 
 
@@ -206,17 +205,37 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "Как пользоваться ботом:\n\n"
-        "1. Нажми /menu или кнопку «🎛 Настройки генерации».\n"
-        "2. Выбери соотношение сторон, разрешение, формат и уровень фильтра.\n"
+        "1. Нажми /menu или кнопку «🎛 Меню».\n"
+        "2. В настройках выбери соотношение сторон, разрешение, формат и уровень фильтра.\n"
         "3. Отправь текстовый промт (на русском или английском).\n"
         "4. Я верну сгенерированное изображение.\n\n"
-        "Сейчас это MVP: одна модель (google/nano-banana-pro) и один шаг генерации."
+        "Сейчас это MVP: одна модель (google/nano-banana-pro)."
     )
     await update.message.reply_text(text)
 
 
 # ----------------------------------------
-# CallbackQuery (кнопки)
+# Обработка кнопок reply-клавиатуры
+# ----------------------------------------
+async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = (update.message.text or "").strip()
+
+    if text == "🚀 Старт":
+        await start(update, context)
+        return
+    if text == "🎛 Меню":
+        await menu_command(update, context)
+        return
+    if text == "ℹ Помощь":
+        await help_command(update, context)
+        return
+
+    # Если это не кнопка — считаем, что это промт для генерации
+    await handle_prompt(update, context)
+
+
+# ----------------------------------------
+# CallbackQuery (инлайн-кнопки настроек)
 # ----------------------------------------
 async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -279,6 +298,8 @@ async def handle_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     prompt = update.message.text.strip()
+
+    # Команды отдельно обрабатываются
     if prompt.startswith("/"):
         return
 
@@ -301,10 +322,10 @@ async def handle_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "safety_filter_level": settings["safety_filter_level"],
         }
 
+        # ВАЖНО: используем классический run без client=
         output = replicate.run(
             "google/nano-banana-pro",
             input=input_payload,
-            client=replicate_client,
         )
 
         logger.info("Raw output from replicate.run: %r (type=%s)", output, type(output))
@@ -353,9 +374,13 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("help", help_command))
+
+    # Инлайн-кнопки настроек
     application.add_handler(CallbackQueryHandler(settings_callback))
+
+    # Все текстовые сообщения (кнопки + промты)
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_prompt)
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_buttons)
     )
 
     application.run_polling()
