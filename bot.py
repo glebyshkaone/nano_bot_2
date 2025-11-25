@@ -1,5 +1,6 @@
 import os
 import json
+import math
 import logging
 from io import BytesIO
 from pathlib import Path
@@ -31,7 +32,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-logger.info("Starting nano-bot (UI + refs + tokens)")
+logger.info("Starting nano-bot (UI + refs + tokens + admin)")
 
 # ----------------------------------------
 # Переменные окружения
@@ -40,7 +41,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 
 # список админов через запятую: ADMIN_IDS=12345,67890
-ADMIN_IDS = []
+ADMIN_IDS: list[int] = []
 _admin_ids_raw = os.getenv("ADMIN_IDS", "").strip()
 if _admin_ids_raw:
     try:
@@ -61,25 +62,26 @@ logger.info(
 )
 
 # ----------------------------------------
-# Токены пользователей
+# Файлы хранения
 # ----------------------------------------
 TOKENS_FILE = Path("user_tokens.json")
+USERS_FILE = Path("users.json")
 TOKENS_PER_IMAGE = 150  # 1 генерация = 150 пользовательских токенов
 
 
-def load_token_store() -> dict:
+# ---------- Токены ----------
+def load_token_store() -> dict[int, int]:
     if TOKENS_FILE.exists():
         try:
             with TOKENS_FILE.open("r", encoding="utf-8") as f:
                 data = json.load(f)
-                # ключи в json — строки, приводим к int
                 return {int(k): int(v) for k, v in data.items()}
         except Exception as e:
             logger.error("Failed to load token store: %s", e)
     return {}
 
 
-def save_token_store(store: dict) -> None:
+def save_token_store(store: dict[int, int]) -> None:
     try:
         with TOKENS_FILE.open("w", encoding="utf-8") as f:
             json.dump({str(k): int(v) for k, v in store.items()}, f)
@@ -87,7 +89,7 @@ def save_token_store(store: dict) -> None:
         logger.error("Failed to save token store: %s", e)
 
 
-TOKEN_STORE = load_token_store()
+TOKEN_STORE: dict[int, int] = load_token_store()
 
 
 def get_balance(user_id: int) -> int:
@@ -108,8 +110,48 @@ def deduct_tokens(user_id: int, amount: int) -> bool:
     return True
 
 
+# ---------- Пользователи ----------
+def load_users() -> dict[int, dict]:
+    if USERS_FILE.exists():
+        try:
+            with USERS_FILE.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {int(k): v for k, v in data.items()}
+        except Exception as e:
+            logger.error("Failed to load users: %s", e)
+    return {}
+
+
+def save_users(store: dict[int, dict]) -> None:
+    try:
+        with USERS_FILE.open("w", encoding="utf-8") as f:
+            json.dump({str(k): v for k, v in store.items()}, f, ensure_ascii=False)
+    except Exception as e:
+        logger.error("Failed to save users: %s", e)
+
+
+USERS: dict[int, dict] = load_users()
+
+
+def register_user(telegram_user) -> None:
+    """Сохраняем пользователя при любом взаимодействии."""
+    if not telegram_user:
+        return
+
+    uid = telegram_user.id
+    info = {
+        "first_name": telegram_user.first_name,
+        "last_name": telegram_user.last_name,
+        "username": telegram_user.username,
+    }
+    prev = USERS.get(uid)
+    if prev != info:
+        USERS[uid] = info
+        save_users(USERS)
+
+
 # ----------------------------------------
-# Настройки модели по умолчанию
+# Настройки модели
 # ----------------------------------------
 DEFAULT_SETTINGS = {
     "aspect_ratio": "4:3",
@@ -151,52 +193,23 @@ def build_settings_keyboard(settings: dict) -> InlineKeyboardMarkup:
         return f"✅ {label}" if current == value else label
 
     keyboard = [
-        # Aspect ratio
         [
+            InlineKeyboardButton(mark(ar, "1:1", "1:1"), callback_data="set|aspect_ratio|1:1"),
+            InlineKeyboardButton(mark(ar, "4:3", "4:3"), callback_data="set|aspect_ratio|4:3"),
             InlineKeyboardButton(
-                mark(ar, "1:1", "1:1"),
-                callback_data="set|aspect_ratio|1:1",
+                mark(ar, "16:9", "16:9"), callback_data="set|aspect_ratio|16:9"
             ),
-            InlineKeyboardButton(
-                mark(ar, "4:3", "4:3"),
-                callback_data="set|aspect_ratio|4:3",
-            ),
-            InlineKeyboardButton(
-                mark(ar, "16:9", "16:9"),
-                callback_data="set|aspect_ratio|16:9",
-            ),
-            InlineKeyboardButton(
-                mark(ar, "9:16", "9:16"),
-                callback_data="set|aspect_ratio|9:16",
-            ),
+            InlineKeyboardButton(mark(ar, "9:16", "9:16"), callback_data="set|aspect_ratio|9:16"),
         ],
-        # Resolution
         [
-            InlineKeyboardButton(
-                mark(res, "1K", "1K"),
-                callback_data="set|resolution|1K",
-            ),
-            InlineKeyboardButton(
-                mark(res, "2K", "2K"),
-                callback_data="set|resolution|2K",
-            ),
-            InlineKeyboardButton(
-                mark(res, "4K", "4K"),
-                callback_data="set|resolution|4K",
-            ),
+            InlineKeyboardButton(mark(res, "1K", "1K"), callback_data="set|resolution|1K"),
+            InlineKeyboardButton(mark(res, "2K", "2K"), callback_data="set|resolution|2K"),
+            InlineKeyboardButton(mark(res, "4K", "4K"), callback_data="set|resolution|4K"),
         ],
-        # Output format
         [
-            InlineKeyboardButton(
-                mark(fmt, "png", "png"),
-                callback_data="set|output_format|png",
-            ),
-            InlineKeyboardButton(
-                mark(fmt, "jpg", "jpg"),
-                callback_data="set|output_format|jpg",
-            ),
+            InlineKeyboardButton(mark(fmt, "png", "png"), callback_data="set|output_format|png"),
+            InlineKeyboardButton(mark(fmt, "jpg", "jpg"), callback_data="set|output_format|jpg"),
         ],
-        # Safety filter
         [
             InlineKeyboardButton(
                 mark(safety, "block_only_high", "safe (high)"),
@@ -215,8 +228,7 @@ def build_settings_keyboard(settings: dict) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(
-                "🔁 Сбросить к стандартным",
-                callback_data="reset|settings|default",
+                "🔁 Сбросить к стандартным", callback_data="reset|settings|default"
             )
         ],
     ]
@@ -225,22 +237,24 @@ def build_settings_keyboard(settings: dict) -> InlineKeyboardMarkup:
 
 def build_reply_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
-        [
-            KeyboardButton("🚀 Старт"),
-            KeyboardButton("🎛 Меню"),
-        ],
-        [
-            KeyboardButton("💰 Баланс"),
-            KeyboardButton("ℹ Помощь"),
-        ],
+        [KeyboardButton("🚀 Старт"), KeyboardButton("🎛 Меню")],
+        [KeyboardButton("💰 Баланс"), KeyboardButton("ℹ Помощь")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
 # ----------------------------------------
-# Команды
+# Вспомогательные функции
+# ----------------------------------------
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
+# ----------------------------------------
+# Команды пользователя
 # ----------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    register_user(update.effective_user)
     user_id = update.effective_user.id
     settings = get_user_settings(context)
     balance = get_balance(user_id)
@@ -249,18 +263,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Отправь мне текстовый промт — я сгенерирую картинку через "
         "google/nano-banana-pro на Replicate.\n\n"
         "Можешь отправить фото с подписью — я использую его как референс (image_input).\n\n"
-        "Чтобы пополнить баланс, напиши @glebyshkaone.\n"
+        "Чтобы пополнить баланс, напиши @glebyshkaone."
     )
-    await update.message.reply_text(
-        text,
-        reply_markup=build_reply_keyboard(),
-    )
-    await update.message.reply_text(
-        format_settings_text(settings, balance=balance)
-    )
+    await update.message.reply_text(text, reply_markup=build_reply_keyboard())
+    await update.message.reply_text(format_settings_text(settings, balance=balance))
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    register_user(update.effective_user)
     user_id = update.effective_user.id
     settings = get_user_settings(context)
     balance = get_balance(user_id)
@@ -271,11 +281,11 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    register_user(update.effective_user)
     text = (
         "Как пользоваться ботом:\n\n"
         f"• 1 изображение = {TOKENS_PER_IMAGE} токенов.\n"
         "• Пополнить баланс можно, написав @glebyshkaone.\n\n"
-        "Шаги:\n"
         "1. Нажми /menu или кнопку «🎛 Меню».\n"
         "2. Выбери настройки генерации.\n"
         "3. Отправь текстовый промт или фото с подписью.\n"
@@ -285,6 +295,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    register_user(update.effective_user)
     user_id = update.effective_user.id
     balance = get_balance(user_id)
     await update.message.reply_text(
@@ -294,20 +305,20 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
-
-
+# ----------------------------------------
+# Админ-команды (текстовые)
+# ----------------------------------------
 async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    register_user(update.effective_user)
     user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("У вас нет доступа к админ-командам.")
         return
 
     text = (
-        "Админ-команды:\n\n"
-        "/add_tokens <telegram_id> <amount> — начислить токены пользователю.\n"
-        "/balance — посмотреть свой баланс (как обычный пользователь).\n\n"
+        "Админ-панель:\n\n"
+        "/admin — открыть визуальную админку с кнопками.\n"
+        "/add_tokens <telegram_id> <amount> — начислить токены вручную.\n\n"
         "Пример:\n"
         "/add_tokens 123456789 500"
     )
@@ -315,6 +326,7 @@ async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def add_tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    register_user(update.effective_user)
     user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("У вас нет доступа к этой команде.")
@@ -347,9 +359,214 @@ async def add_tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ----------------------------------------
-# Reply-кнопки
+# Админ-панель (кнопки)
+# ----------------------------------------
+def build_admin_main_keyboard() -> InlineKeyboardMarkup:
+    keyboard = [
+        [InlineKeyboardButton("📋 Пользователи", callback_data="admin|users|0")],
+        [InlineKeyboardButton("❓ Помощь по админке", callback_data="admin|help")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    register_user(update.effective_user)
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("У вас нет доступа к админ-панели.")
+        return
+
+    total_users = len(USERS)
+    text = (
+        "Админ-панель nano-bot 👑\n\n"
+        f"Всего пользователей: {total_users}\n\n"
+        "Выберите действие:"
+    )
+    await update.message.reply_text(text, reply_markup=build_admin_main_keyboard())
+
+
+def build_admin_users_page(page: int, page_size: int = 5) -> tuple[str, InlineKeyboardMarkup]:
+    user_ids = sorted(USERS.keys())
+    total = len(user_ids)
+    if total == 0:
+        text = "Пользователей пока нет."
+        return text, InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⬅️ В админ-панель", callback_data="admin|back|main")]]
+        )
+
+    total_pages = max(1, math.ceil(total / page_size))
+    page = max(0, min(page, total_pages - 1))
+
+    start_idx = page * page_size
+    end_idx = start_idx + page_size
+    slice_ids = user_ids[start_idx:end_idx]
+
+    lines = [
+        f"Пользователи (стр. {page + 1}/{total_pages}, всего: {total})",
+        "",
+    ]
+    keyboard_rows = []
+
+    for uid in slice_ids:
+        info = USERS.get(uid, {})
+        username = info.get("username")
+        first_name = info.get("first_name") or ""
+        last_name = info.get("last_name") or ""
+        name = (first_name + " " + (last_name or "")).strip() or "Без имени"
+        balance = get_balance(uid)
+
+        tag = f"@{username}" if username else ""
+        lines.append(f"{uid} {tag} — {name} — {balance} токенов")
+
+        btn_label = f"{name} ({balance})"
+        keyboard_rows.append(
+            [InlineKeyboardButton(btn_label, callback_data=f"admin|user|{uid}|{page}")]
+        )
+
+    # навигация
+    nav_row = []
+    if page > 0:
+        nav_row.append(
+            InlineKeyboardButton("◀️", callback_data=f"admin|users|{page - 1}")
+        )
+    if page < total_pages - 1:
+        nav_row.append(
+            InlineKeyboardButton("▶️", callback_data=f"admin|users|{page + 1}")
+        )
+    if nav_row:
+        keyboard_rows.append(nav_row)
+
+    keyboard_rows.append(
+        [InlineKeyboardButton("⬅️ В админ-панель", callback_data="admin|back|main")]
+    )
+
+    text = "\n".join(lines)
+    return text, InlineKeyboardMarkup(keyboard_rows)
+
+
+def build_admin_user_detail(uid: int, page: int) -> tuple[str, InlineKeyboardMarkup]:
+    info = USERS.get(uid, {})
+    username = info.get("username")
+    first_name = info.get("first_name") or ""
+    last_name = info.get("last_name") or ""
+    name = (first_name + " " + (last_name or "")).strip() or "Без имени"
+    balance = get_balance(uid)
+
+    lines = [
+        "Карточка пользователя 👤",
+        "",
+        f"ID: {uid}",
+        f"Имя: {name}",
+        f"Username: @{username}" if username else "Username: —",
+        f"Баланс: {balance} токенов",
+        "",
+        "Начислить токены:",
+    ]
+
+    keyboard = [
+        [
+            InlineKeyboardButton("+150", callback_data=f"admin|add|{uid}|150|{page}"),
+            InlineKeyboardButton("+500", callback_data=f"admin|add|{uid}|500|{page}"),
+            InlineKeyboardButton("+1000", callback_data=f"admin|add|{uid}|1000|{page}"),
+        ],
+        [
+            InlineKeyboardButton(
+                "⬅️ Назад к списку", callback_data=f"admin|users|{page}"
+            )
+        ],
+    ]
+
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
+
+
+async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    user_id = query.from_user.id
+    if not is_admin(user_id):
+        await query.answer("Нет доступа", show_alert=True)
+        return
+
+    await query.answer()
+    data = query.data or ""
+    parts = data.split("|")
+
+    # форматы:
+    # admin|users|page
+    # admin|help
+    # admin|back|main
+    # admin|user|uid|page
+    # admin|add|uid|amount|page
+
+    if len(parts) < 2:
+        return
+
+    action = parts[1]
+
+    if action == "help":
+        text = (
+            "Админ-панель:\n\n"
+            "• «Пользователи» — список всех юзеров, их баланс.\n"
+            "• В карточке пользователя можно быстро начислить +150 / +500 / +1000 токенов.\n\n"
+            "Для произвольной суммы есть команда:\n"
+            "/add_tokens <telegram_id> <amount>"
+        )
+        await query.message.edit_text(text, reply_markup=build_admin_main_keyboard())
+        return
+
+    if action == "back" and len(parts) >= 3 and parts[2] == "main":
+        total_users = len(USERS)
+        text = (
+            "Админ-панель nano-bot 👑\n\n"
+            f"Всего пользователей: {total_users}\n\n"
+            "Выберите действие:"
+        )
+        await query.message.edit_text(text, reply_markup=build_admin_main_keyboard())
+        return
+
+    if action == "users" and len(parts) >= 3:
+        try:
+            page = int(parts[2])
+        except ValueError:
+            page = 0
+        text, kb = build_admin_users_page(page)
+        await query.message.edit_text(text, reply_markup=kb)
+        return
+
+    if action == "user" and len(parts) >= 4:
+        try:
+            uid = int(parts[2])
+            page = int(parts[3])
+        except ValueError:
+            return
+        text, kb = build_admin_user_detail(uid, page)
+        await query.message.edit_text(text, reply_markup=kb)
+        return
+
+    if action == "add" and len(parts) >= 5:
+        try:
+            uid = int(parts[2])
+            amount = int(parts[3])
+            page = int(parts[4])
+        except ValueError:
+            return
+
+        add_tokens(uid, amount)
+        new_balance = get_balance(uid)
+        await query.answer(f"Начислено {amount} токенов (баланс {new_balance})", show_alert=False)
+
+        text, kb = build_admin_user_detail(uid, page)
+        await query.message.edit_text(text, reply_markup=kb)
+        return
+
+
+# ----------------------------------------
+# Reply-кнопки пользователя
 # ----------------------------------------
 async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    register_user(update.effective_user)
     text = (update.message.text or "").strip()
 
     if text == "🚀 Старт":
@@ -370,7 +587,7 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 # ----------------------------------------
-# Инлайн-кнопки настроек
+# Инлайн-кнопки настроек генерации
 # ----------------------------------------
 async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -379,28 +596,11 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     await query.answer()
     data = query.data or ""
+    if not data or not data.startswith(("set|", "reset|", "open|")):
+        return  # остальные колбеки — для админки
+
     parts = data.split("|")
-
-    if len(parts) < 2:
-        return
-
     action = parts[0]
-
-    if action == "open":
-        target = parts[1]
-        if target == "settings":
-            settings = get_user_settings(context)
-            balance = get_balance(query.from_user.id)
-            await query.message.edit_text(
-                format_settings_text(settings, balance=balance),
-                reply_markup=build_settings_keyboard(settings),
-            )
-        elif target == "help":
-            await query.message.edit_text(
-                "Это nano-bot на базе google/nano-banana-pro.\n\n"
-                "Используй /menu, чтобы настроить генерацию, и просто отправляй промты.",
-            )
-        return
 
     if action == "reset":
         context.user_data.clear()
@@ -427,6 +627,22 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return
 
+    if action == "open" and len(parts) >= 2:
+        target = parts[1]
+        if target == "settings":
+            settings = get_user_settings(context)
+            balance = get_balance(query.from_user.id)
+            await query.message.edit_text(
+                format_settings_text(settings, balance=balance),
+                reply_markup=build_settings_keyboard(settings),
+            )
+        elif target == "help":
+            await query.message.edit_text(
+                "Это nano-bot на базе google/nano-banana-pro.\n\n"
+                "Используй /menu, чтобы настроить генерацию, и просто отправляй промты.",
+            )
+        return
+
 
 # ----------------------------------------
 # Генерация через nano-banana
@@ -437,6 +653,7 @@ async def generate_with_nano_banana(
     prompt: str,
     image_urls: list[str] | None = None,
 ) -> None:
+    register_user(update.effective_user)
     user_id = update.effective_user.id
     balance = get_balance(user_id)
 
@@ -508,7 +725,6 @@ async def generate_with_nano_banana(
                 f"Списано {TOKENS_PER_IMAGE} токенов. Новый баланс: {new_balance}."
             )
         else:
-            # Теоретически не должно происходить, но на всякий случай
             await update.message.reply_text(
                 "Изображение сгенерировано, но не удалось списать токены — обратитесь к администратору."
             )
@@ -540,9 +756,10 @@ async def handle_text_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ----------------------------------------
-# Фото + caption как референс
+# Фото как референс
 # ----------------------------------------
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    register_user(update.effective_user)
     message = update.message
     if not message or not message.photo:
         return
@@ -564,15 +781,22 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 def main() -> None:
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # Пользовательские команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("balance", balance_command))
 
+    # Админ-команды
+    application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("admin_help", admin_help_command))
     application.add_handler(CommandHandler("add_tokens", add_tokens_command))
 
+    # CallbackQuery: сначала админка, потом настройки генерации
+    application.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin\\|"))
     application.add_handler(CallbackQueryHandler(settings_callback))
+
+    # Фото и текст
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_buttons)
