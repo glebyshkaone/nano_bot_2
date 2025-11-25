@@ -1,7 +1,7 @@
 import os
 import logging
 from io import BytesIO
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict
 
 import httpx
 import replicate
@@ -30,7 +30,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-logger.info("Starting nano-bot with Supabase storage")
+logger.info("Starting nano-bot with Supabase storage + admin panel + history")
 
 # ----------------------------------------
 # Env
@@ -42,7 +42,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
-ADMIN_IDS = []
+ADMIN_IDS: List[int] = []
 if ADMIN_IDS_RAW:
     try:
         ADMIN_IDS = [int(x) for x in ADMIN_IDS_RAW.split(",") if x.strip()]
@@ -151,7 +151,7 @@ def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
 def build_reply_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
         [KeyboardButton("🚀 Старт"), KeyboardButton("🎛 Меню")],
-        [KeyboardButton("💰 Баланс"), KeyboardButton("ℹ Помощь")],
+        [KeyboardButton("💰 Баланс"), KeyboardButton("📜 История"), KeyboardButton("ℹ Помощь")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -221,6 +221,108 @@ async def supabase_fetch_recent_users(limit: int = 20) -> List[Dict]:
     return resp.json()
 
 
+async def supabase_search_users(query: str, limit: int = 20) -> List[Dict]:
+    """Поиск по id или по username/имени (ilike)."""
+    params = {
+        "select": "id,username,first_name,last_name,balance,created_at",
+        "limit": str(limit),
+    }
+
+    # Если строка — целое число, ищем по id
+    if query.isdigit():
+        params["id"] = f"eq.{int(query)}"
+    else:
+        q = query.strip()
+        or_param = f"(username.ilike.*{q}*,first_name.ilike.*{q}*,last_name.ilike.*{q}*)"
+        params["or"] = or_param
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{SUPABASE_REST_URL}/telegram_users",
+            headers=SUPABASE_HEADERS_BASE,
+            params=params,
+            timeout=10.0,
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+# ----- admin_actions -----
+async def log_admin_action(
+    admin_id: int,
+    target_id: int,
+    action: str,
+    amount: int,
+    note: Optional[str] = None,
+) -> None:
+    payload = {
+        "admin_id": admin_id,
+        "target_user_id": target_id,
+        "action": action,
+        "amount": amount,
+        "note": note,
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{SUPABASE_REST_URL}/admin_actions",
+            headers=SUPABASE_HEADERS_BASE,
+            json=[payload],
+            timeout=10.0,
+        )
+    # если таблица не создана / RLS блокирует — логируем, но не ломаем бота
+    if resp.status_code >= 300:
+        logger.warning("Failed to log admin_action: %s %s", resp.status_code, resp.text)
+
+
+# ----- generations -----
+async def log_generation(
+    user_id: int,
+    prompt: str,
+    image_url: str,
+    settings: Dict,
+    tokens_spent: int,
+) -> None:
+    payload = {
+        "user_id": user_id,
+        "prompt": prompt,
+        "image_url": image_url,
+        "tokens_spent": tokens_spent,
+        "model": "google/nano-banana-pro",
+        "aspect_ratio": settings.get("aspect_ratio"),
+        "resolution": settings.get("resolution"),
+        "output_format": settings.get("output_format"),
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{SUPABASE_REST_URL}/generations",
+            headers=SUPABASE_HEADERS_BASE,
+            json=[payload],
+            timeout=10.0,
+        )
+    if resp.status_code >= 300:
+        logger.warning("Failed to log generation: %s %s", resp.status_code, resp.text)
+
+
+async def fetch_generations(user_id: int, limit: int = 5) -> List[Dict]:
+    params = {
+        "select": "id,prompt,image_url,tokens_spent,created_at",
+        "user_id": f"eq.{user_id}",
+        "order": "created_at.desc",
+        "limit": str(limit),
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{SUPABASE_REST_URL}/generations",
+            headers=SUPABASE_HEADERS_BASE,
+            params=params,
+            timeout=10.0,
+        )
+    if resp.status_code >= 300:
+        logger.warning("Failed to fetch generations: %s %s", resp.status_code, resp.text)
+        return []
+    return resp.json()
+
+
 # ----------------------------------------
 # User + balance API
 # ----------------------------------------
@@ -281,7 +383,18 @@ async def add_tokens(user_id: int, amount: int) -> int:
     return new_balance
 
 
+async def subtract_tokens(user_id: int, amount: int) -> int:
+    """Списать токены вручную (админом), не даём уйти ниже 0."""
+    if amount <= 0:
+        return await get_balance(user_id)
+    current = await get_balance(user_id)
+    new_balance = max(0, current - amount)
+    await set_balance(user_id, new_balance)
+    return new_balance
+
+
 async def deduct_tokens(user_id: int, amount: int) -> bool:
+    """Списать токены при генерации, если хватает."""
     current = await get_balance(user_id)
     if current < amount:
         return False
@@ -331,7 +444,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "1. Нажми /menu или кнопку «🎛 Меню».\n"
         "2. Выбери настройки генерации.\n"
         "3. Отправь текстовый промт или фото с подписью.\n"
-        "4. Если хватает токенов — я сгенерирую картинку."
+        "4. Если хватает токенов — я сгенерирую картинку.\n\n"
+        "Команды:\n"
+        "/balance — посмотреть баланс\n"
+        "/history — последние генерации\n"
+        "/admin — админ-панель (для админов)"
     )
     await update.message.reply_text(text)
 
@@ -345,6 +462,31 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"1 изображение = {TOKENS_PER_IMAGE} токенов.\n"
         "Чтобы пополнить баланс, напишите @glebyshkaone."
     )
+
+
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await register_user(update.effective_user)
+    user_id = update.effective_user.id
+    gens = await fetch_generations(user_id, limit=5)
+
+    if not gens:
+        await update.message.reply_text("Пока нет сохранённой истории генераций.")
+        return
+
+    lines = ["Ваши последние генерации (до 5):", ""]
+    for g in gens:
+        prompt = g.get("prompt") or ""
+        ts = g.get("created_at") or ""
+        tokens_spent = g.get("tokens_spent") or 0
+        image_url = g.get("image_url") or ""
+        short_prompt = (prompt[:80] + "…") if len(prompt) > 80 else prompt
+        lines.append(f"• {short_prompt}")
+        lines.append(f"  Токенов: {tokens_spent} | Время: {ts}")
+        if image_url:
+            lines.append(f"  {image_url}")
+        lines.append("")
+
+    await update.message.reply_text("\n".join(lines))
 
 
 # ----------------------------------------
@@ -369,8 +511,8 @@ async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def add_tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_user(update.effective_user)
-    user_id = update.effective_user.id
-    if not is_admin(user_id):
+    admin_id = update.effective_user.id
+    if not is_admin(admin_id):
         await update.message.reply_text("У вас нет доступа к этой команде.")
         return
 
@@ -394,6 +536,7 @@ async def add_tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     new_balance = await add_tokens(target_id, amount)
+    await log_admin_action(admin_id, target_id, "add_tokens_command", amount)
 
     # Ответ админу
     await update.message.reply_text(
@@ -431,6 +574,9 @@ def build_admin_main_keyboard(users: List[Dict]) -> InlineKeyboardMarkup:
     if not rows:
         rows = [[InlineKeyboardButton("Нет пользователей", callback_data="admin_none")]]
 
+    # строка поиска
+    rows.append([InlineKeyboardButton("🔎 Поиск", callback_data="admin_search_prompt")])
+
     return InlineKeyboardMarkup(rows)
 
 
@@ -442,7 +588,17 @@ def build_admin_user_keyboard(uid: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("+500", callback_data=f"admin_add|{uid}|500"),
                 InlineKeyboardButton("+1000", callback_data=f"admin_add|{uid}|1000"),
             ],
-            [InlineKeyboardButton("⬅️ Назад к списку", callback_data="admin_back_main")],
+            [
+                InlineKeyboardButton("−150", callback_data=f"admin_sub|{uid}|150"),
+                InlineKeyboardButton("−500", callback_data=f"admin_sub|{uid}|500"),
+                InlineKeyboardButton("−1000", callback_data=f"admin_sub|{uid}|1000"),
+            ],
+            [
+                InlineKeyboardButton("🧹 Обнулить", callback_data=f"admin_zero|{uid}"),
+            ],
+            [
+                InlineKeyboardButton("⬅️ Назад к списку", callback_data="admin_back_main"),
+            ],
         ]
     )
 
@@ -460,9 +616,11 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     text_lines = ["Админ-панель nano-bot 👑", ""]
     text_lines.append(f"Показаны последние {total} пользователей.")
     text_lines.append("")
-    text_lines.append("Выберите пользователя, чтобы начислить токены:")
-
+    text_lines.append("Выберите пользователя, чтобы начислить/списать токены:")
     kb = build_admin_main_keyboard(users)
+
+    context.user_data["admin_search_mode"] = False
+
     await update.message.reply_text("\n".join(text_lines), reply_markup=kb)
 
 
@@ -471,8 +629,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not query:
         return
 
-    user_id = query.from_user.id
-    if not is_admin(user_id):
+    admin_id = query.from_user.id
+    if not is_admin(admin_id):
         await query.answer("Нет доступа", show_alert=True)
         return
 
@@ -481,6 +639,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer()
         return
 
+    # Назад к списку
     if data == "admin_back_main":
         await query.answer()
         users = await supabase_fetch_recent_users(limit=20)
@@ -488,11 +647,30 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         text_lines = ["Админ-панель nano-bot 👑", ""]
         text_lines.append(f"Показаны последние {total} пользователей.")
         text_lines.append("")
-        text_lines.append("Выберите пользователя, чтобы начислить токены:")
+        text_lines.append("Выберите пользователя, чтобы начислить/списать токены:")
         kb = build_admin_main_keyboard(users)
+        context.user_data["admin_search_mode"] = False
         await query.message.edit_text("\n".join(text_lines), reply_markup=kb)
         return
 
+    # Запрос поиска
+    if data == "admin_search_prompt":
+        await query.answer()
+        context.user_data["admin_search_mode"] = True
+        await query.message.edit_text(
+            "🔎 Введите ID, username или часть имени для поиска.\n\n"
+            "Например:\n"
+            "`123456789`\n"
+            "`@username`\n"
+            "`gleb`",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("⬅️ Назад к списку", callback_data="admin_back_main")]]
+            ),
+        )
+        return
+
+    # Карточка пользователя
     if data.startswith("admin_user|"):
         await query.answer()
         _, uid_str = data.split("|", 1)
@@ -520,13 +698,15 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"Username: @{username}" if username else "Username: —",
             f"Баланс: {balance} токенов",
             "",
-            "Начислить токены:",
+            "Начислить / списать токены:",
         ]
 
         kb = build_admin_user_keyboard(uid)
+        context.user_data["admin_search_mode"] = False
         await query.message.edit_text("\n".join(lines), reply_markup=kb)
         return
 
+    # Начисление токенов кнопками
     if data.startswith("admin_add|"):
         await query.answer()
         try:
@@ -537,8 +717,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         new_balance = await add_tokens(uid, amount)
+        await log_admin_action(admin_id, uid, "admin_add_button", amount)
 
-        # Тост админу
         await query.answer(
             f"Начислено {amount} токенов (баланс {new_balance})",
             show_alert=False,
@@ -577,7 +757,108 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"Username: @{username}" if username else "Username: —",
             f"Баланс: {balance} токенов",
             "",
-            "Начислить токены:",
+            "Начислить / списать токены:",
+        ]
+        kb = build_admin_user_keyboard(uid)
+        await query.message.edit_text("\n".join(lines), reply_markup=kb)
+        return
+
+    # Списание токенов кнопками
+    if data.startswith("admin_sub|"):
+        await query.answer()
+        try:
+            _, uid_str, amount_str = data.split("|", 2)
+            uid = int(uid_str)
+            amount = int(amount_str)
+        except ValueError:
+            return
+
+        new_balance = await subtract_tokens(uid, amount)
+        await log_admin_action(admin_id, uid, "admin_sub_button", -amount)
+
+        await query.answer(
+            f"Списано {amount} токенов (баланс {new_balance})",
+            show_alert=False,
+        )
+
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text=(
+                    f"⚠️ С вашего баланса списано {amount} токенов.\n"
+                    f"Текущий баланс: {new_balance} токенов."
+                ),
+            )
+        except Exception as e:
+            logger.warning("Не удалось отправить уведомление пользователю %s: %s", uid, e)
+
+        user = await supabase_get_user(uid)
+        if not user:
+            await query.message.edit_text("Пользователь не найден.")
+            return
+
+        first_name = user.get("first_name") or ""
+        last_name = user.get("last_name") or ""
+        name = (first_name + " " + (last_name or "")).strip() or "Без имени"
+        username = user.get("username")
+        balance = user.get("balance", 0)
+
+        lines = [
+            "Карточка пользователя 👤",
+            "",
+            f"ID: {uid}",
+            f"Имя: {name}",
+            f"Username: @{username}" if username else "Username: —",
+            f"Баланс: {balance} токенов",
+            "",
+            "Начислить / списать токены:",
+        ]
+        kb = build_admin_user_keyboard(uid)
+        await query.message.edit_text("\n".join(lines), reply_markup=kb)
+        return
+
+    # Обнуление баланса
+    if data.startswith("admin_zero|"):
+        await query.answer()
+        try:
+            _, uid_str = data.split("|", 1)
+            uid = int(uid_str)
+        except ValueError:
+            return
+
+        await set_balance(uid, 0)
+        await log_admin_action(admin_id, uid, "admin_zero_button", 0)
+        new_balance = 0
+
+        await query.answer("Баланс пользователя обнулён", show_alert=False)
+
+        try:
+            await context.bot.send_message(
+                chat_id=uid,
+                text="🧹 Ваш баланс был обнулён администратором.",
+            )
+        except Exception as e:
+            logger.warning("Не удалось отправить уведомление пользователю %s: %s", uid, e)
+
+        user = await supabase_get_user(uid)
+        if not user:
+            await query.message.edit_text("Пользователь не найден.")
+            return
+
+        first_name = user.get("first_name") or ""
+        last_name = user.get("last_name") or ""
+        name = (first_name + " " + (last_name or "")).strip() or "Без имени"
+        username = user.get("username")
+
+        lines = [
+            "Карточка пользователя 👤",
+            "",
+            f"ID: {uid}",
+            f"Имя: {name}",
+            f"Username: @{username}" if username else "Username: —",
+            f"Баланс: {new_balance} токенов",
+            "",
+            "Начислить / списать токены:",
         ]
         kb = build_admin_user_keyboard(uid)
         await query.message.edit_text("\n".join(lines), reply_markup=kb)
@@ -585,12 +866,36 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # ----------------------------------------
-# Reply-кнопки пользователя
+# Reply-кнопки пользователя + режим поиска для админа
 # ----------------------------------------
 async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_user(update.effective_user)
     text = (update.message.text or "").strip()
+    user_id = update.effective_user.id
 
+    # Режим админского поиска
+    if is_admin(user_id) and context.user_data.get("admin_search_mode"):
+        context.user_data["admin_search_mode"] = False
+        query = text.lstrip("@").strip()
+        users = await supabase_search_users(query, limit=20)
+
+        if not users:
+            await update.message.reply_text(
+                f"По запросу «{query}» пользователей не найдено.",
+            )
+            return
+
+        total = len(users)
+        lines = [
+            f"Результаты поиска по «{query}» (найдено {total}):",
+            "",
+            "Нажми на пользователя, чтобы открыть карточку.",
+        ]
+        kb = build_admin_main_keyboard(users)
+        await update.message.reply_text("\n".join(lines), reply_markup=kb)
+        return
+
+    # Обычные кнопки
     if text == "🚀 Старт":
         await start(update, context)
         return
@@ -602,6 +907,9 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     if text == "💰 Баланс":
         await balance_command(update, context)
+        return
+    if text == "📜 История":
+        await history_command(update, context)
         return
 
     # Всё остальное — текстовый промт
@@ -616,7 +924,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not query:
         return
 
-    # Не трогаем admin_* callbacks
+    # Не трогаем admin_* callbacks — их обрабатывает admin_callback
     if (query.data or "").startswith("admin_"):
         return
 
@@ -717,6 +1025,7 @@ async def generate_with_nano_banana(
             )
             return
 
+        # Скачиваем файл и отправляем как binary (чтобы не словить 400 от Telegram)
         async with httpx.AsyncClient() as client:
             resp = await client.get(image_url)
             resp.raise_for_status()
@@ -734,6 +1043,14 @@ async def generate_with_nano_banana(
             new_balance = await get_balance(user_id)
             await update.message.reply_text(
                 f"Списано {TOKENS_PER_IMAGE} токенов. Новый баланс: {new_balance}."
+            )
+            # Логируем генерацию
+            await log_generation(
+                user_id=user_id,
+                prompt=prompt,
+                image_url=image_url,
+                settings=settings,
+                tokens_spent=TOKENS_PER_IMAGE,
             )
         else:
             await update.message.reply_text(
@@ -797,6 +1114,7 @@ def main() -> None:
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("balance", balance_command))
+    application.add_handler(CommandHandler("history", history_command))
 
     # Админ-команды
     application.add_handler(CommandHandler("admin", admin_command))
