@@ -1,9 +1,7 @@
 import os
-import json
-import math
 import logging
 from io import BytesIO
-from pathlib import Path
+from typing import Optional, List, Dict, Tuple
 
 import httpx
 import replicate
@@ -32,22 +30,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-logger.info("Starting nano-bot (UI + refs + tokens + admin + notifications)")
+logger.info("Starting nano-bot with Supabase storage")
 
 # ----------------------------------------
-# Переменные окружения
+# Env
 # ----------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 
-# список админов через запятую: ADMIN_IDS=12345,67890
-ADMIN_IDS: list[int] = []
-_admin_ids_raw = os.getenv("ADMIN_IDS", "").strip()
-if _admin_ids_raw:
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
+ADMIN_IDS = []
+if ADMIN_IDS_RAW:
     try:
-        ADMIN_IDS = [int(x) for x in _admin_ids_raw.split(",") if x.strip()]
+        ADMIN_IDS = [int(x) for x in ADMIN_IDS_RAW.split(",") if x.strip()]
     except ValueError:
-        logger.error("ADMIN_IDS env parse error, value=%r", _admin_ids_raw)
+        logger.error("Failed to parse ADMIN_IDS=%r", ADMIN_IDS_RAW)
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set")
@@ -55,100 +55,17 @@ if not TELEGRAM_BOT_TOKEN:
 if not REPLICATE_API_TOKEN:
     raise ValueError("REPLICATE_API_TOKEN not set")
 
-logger.info(
-    "REPLICATE_API_TOKEN prefix: %s..., length: %s",
-    REPLICATE_API_TOKEN[:8],
-    len(REPLICATE_API_TOKEN),
-)
+if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    raise ValueError("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set")
 
-# ----------------------------------------
-# Файлы хранения
-# ----------------------------------------
-TOKENS_FILE = Path("user_tokens.json")
-USERS_FILE = Path("users.json")
-TOKENS_PER_IMAGE = 150  # 1 генерация = 150 пользовательских токенов
+SUPABASE_REST_URL = SUPABASE_URL.rstrip("/") + "/rest/v1"
+SUPABASE_HEADERS_BASE = {
+    "apikey": SUPABASE_SERVICE_ROLE_KEY,
+    "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    "Content-Type": "application/json",
+}
 
-
-# ---------- Токены ----------
-def load_token_store() -> dict[int, int]:
-    if TOKENS_FILE.exists():
-        try:
-            with TOKENS_FILE.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-                return {int(k): int(v) for k, v in data.items()}
-        except Exception as e:
-            logger.error("Failed to load token store: %s", e)
-    return {}
-
-
-def save_token_store(store: dict[int, int]) -> None:
-    try:
-        with TOKENS_FILE.open("w", encoding="utf-8") as f:
-            json.dump({str(k): int(v) for k, v in store.items()}, f)
-    except Exception as e:
-        logger.error("Failed to save token store: %s", e)
-
-
-TOKEN_STORE: dict[int, int] = load_token_store()
-
-
-def get_balance(user_id: int) -> int:
-    return int(TOKEN_STORE.get(user_id, 0))
-
-
-def add_tokens(user_id: int, amount: int) -> None:
-    TOKEN_STORE[user_id] = get_balance(user_id) + amount
-    save_token_store(TOKEN_STORE)
-
-
-def deduct_tokens(user_id: int, amount: int) -> bool:
-    balance = get_balance(user_id)
-    if balance < amount:
-        return False
-    TOKEN_STORE[user_id] = balance - amount
-    save_token_store(TOKEN_STORE)
-    return True
-
-
-# ---------- Пользователи ----------
-def load_users() -> dict[int, dict]:
-    if USERS_FILE.exists():
-        try:
-            with USERS_FILE.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-                return {int(k): v for k, v in data.items()}
-        except Exception as e:
-            logger.error("Failed to load users: %s", e)
-    return {}
-
-
-def save_users(store: dict[int, dict]) -> None:
-    try:
-        with USERS_FILE.open("w", encoding="utf-8") as f:
-            json.dump({str(k): v for k, v in store.items()}, f, ensure_ascii=False)
-    except Exception as e:
-        logger.error("Failed to save users: %s", e)
-
-
-USERS: dict[int, dict] = load_users()
-
-
-def register_user(telegram_user) -> None:
-    """Сохраняем пользователя при любом взаимодействии."""
-    if not telegram_user:
-        return
-
-    uid = telegram_user.id
-    info = {
-        "first_name": telegram_user.first_name,
-        "last_name": telegram_user.last_name,
-        "username": telegram_user.username,
-    }
-    prev = USERS.get(uid)
-    if prev != info:
-        USERS[uid] = info
-        save_users(USERS)
-
+TOKENS_PER_IMAGE = 150  # стоимость 1 поколения
 
 # ----------------------------------------
 # Настройки модели
@@ -161,14 +78,14 @@ DEFAULT_SETTINGS = {
 }
 
 
-def get_user_settings(context: ContextTypes.DEFAULT_TYPE) -> dict:
+def get_user_settings(context: ContextTypes.DEFAULT_TYPE) -> Dict:
     data = context.user_data
     for k, v in DEFAULT_SETTINGS.items():
         data.setdefault(k, v)
     return data
 
 
-def format_settings_text(settings: dict, balance: int | None = None) -> str:
+def format_settings_text(settings: Dict, balance: Optional[int] = None) -> str:
     bal_part = f"Ваш баланс: {balance} токенов\n\n" if balance is not None else ""
     return (
         bal_part
@@ -183,7 +100,7 @@ def format_settings_text(settings: dict, balance: int | None = None) -> str:
     )
 
 
-def build_settings_keyboard(settings: dict) -> InlineKeyboardMarkup:
+def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
     ar = settings["aspect_ratio"]
     res = settings["resolution"]
     fmt = settings["output_format"]
@@ -196,9 +113,7 @@ def build_settings_keyboard(settings: dict) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(mark(ar, "1:1", "1:1"), callback_data="set|aspect_ratio|1:1"),
             InlineKeyboardButton(mark(ar, "4:3", "4:3"), callback_data="set|aspect_ratio|4:3"),
-            InlineKeyboardButton(
-                mark(ar, "16:9", "16:9"), callback_data="set|aspect_ratio|16:9"
-            ),
+            InlineKeyboardButton(mark(ar, "16:9", "16:9"), callback_data="set|aspect_ratio|16:9"),
             InlineKeyboardButton(mark(ar, "9:16", "9:16"), callback_data="set|aspect_ratio|9:16"),
         ],
         [
@@ -227,9 +142,7 @@ def build_settings_keyboard(settings: dict) -> InlineKeyboardMarkup:
             ),
         ],
         [
-            InlineKeyboardButton(
-                "🔁 Сбросить к стандартным", callback_data="reset|settings|default"
-            )
+            InlineKeyboardButton("🔁 Сбросить к стандартным", callback_data="reset|settings|default")
         ],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -243,21 +156,149 @@ def build_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
-# ----------------------------------------
-# Вспомогательные функции
-# ----------------------------------------
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+
+# ----------------------------------------
+# Supabase helpers
+# ----------------------------------------
+async def supabase_get_user(user_id: int) -> Optional[Dict]:
+    params = {
+        "id": f"eq.{user_id}",
+        "select": "id,username,first_name,last_name,balance,created_at,updated_at",
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{SUPABASE_REST_URL}/telegram_users",
+            headers=SUPABASE_HEADERS_BASE,
+            params=params,
+            timeout=10.0,
+        )
+    resp.raise_for_status()
+    data = resp.json()
+    return data[0] if data else None
+
+
+async def supabase_insert_user(payload: Dict) -> None:
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{SUPABASE_REST_URL}/telegram_users",
+            headers=SUPABASE_HEADERS_BASE,
+            params={"select": "id"},
+            json=[payload],
+            timeout=10.0,
+        )
+    resp.raise_for_status()
+
+
+async def supabase_update_user(user_id: int, payload: Dict) -> None:
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(
+            f"{SUPABASE_REST_URL}/telegram_users",
+            headers=SUPABASE_HEADERS_BASE,
+            params={"id": f"eq.{user_id}", "select": "id"},
+            json=payload,
+            timeout=10.0,
+        )
+    resp.raise_for_status()
+
+
+async def supabase_fetch_recent_users(limit: int = 20) -> List[Dict]:
+    params = {
+        "select": "id,username,first_name,last_name,balance,created_at",
+        "order": "created_at.desc",
+        "limit": str(limit),
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{SUPABASE_REST_URL}/telegram_users",
+            headers=SUPABASE_HEADERS_BASE,
+            params=params,
+            timeout=10.0,
+        )
+    resp.raise_for_status()
+    return resp.json()
+
+
+# ----------------------------------------
+# User + balance API
+# ----------------------------------------
+async def register_user(tg_user) -> None:
+    """Создаём пользователя в Supabase (если нет) и обновляем имя/username."""
+    if not tg_user:
+        return
+
+    uid = tg_user.id
+    username = tg_user.username
+    first_name = tg_user.first_name
+    last_name = tg_user.last_name
+
+    try:
+        existing = await supabase_get_user(uid)
+        if existing:
+            payload = {
+                "username": username,
+                "first_name": first_name,
+                "last_name": last_name,
+                "updated_at": "now()",
+            }
+            await supabase_update_user(uid, payload)
+        else:
+            payload = {
+                "id": uid,
+                "username": username,
+                "first_name": first_name,
+                "last_name": last_name,
+                "balance": 0,
+            }
+            await supabase_insert_user(payload)
+    except Exception as e:
+        logger.error("register_user error for %s: %s", uid, e)
+
+
+async def get_balance(user_id: int) -> int:
+    try:
+        user = await supabase_get_user(user_id)
+        if user and isinstance(user.get("balance"), int):
+            return user["balance"]
+    except Exception as e:
+        logger.error("get_balance error: %s", e)
+    return 0
+
+
+async def set_balance(user_id: int, new_balance: int) -> None:
+    try:
+        await supabase_update_user(user_id, {"balance": new_balance, "updated_at": "now()"})
+    except Exception as e:
+        logger.error("set_balance error: %s", e)
+
+
+async def add_tokens(user_id: int, amount: int) -> int:
+    current = await get_balance(user_id)
+    new_balance = max(0, current + amount)
+    await set_balance(user_id, new_balance)
+    return new_balance
+
+
+async def deduct_tokens(user_id: int, amount: int) -> bool:
+    current = await get_balance(user_id)
+    if current < amount:
+        return False
+    new_balance = current - amount
+    await set_balance(user_id, new_balance)
+    return True
 
 
 # ----------------------------------------
 # Команды пользователя
 # ----------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    register_user(update.effective_user)
+    await register_user(update.effective_user)
     user_id = update.effective_user.id
     settings = get_user_settings(context)
-    balance = get_balance(user_id)
+    balance = await get_balance(user_id)
+
     text = (
         "Привет! Я nano-bot 🤖\n\n"
         "Отправь мне текстовый промт — я сгенерирую картинку через "
@@ -265,15 +306,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Можешь отправить фото с подписью — я использую его как референс (image_input).\n\n"
         "Чтобы пополнить баланс, напиши @glebyshkaone."
     )
+
     await update.message.reply_text(text, reply_markup=build_reply_keyboard())
     await update.message.reply_text(format_settings_text(settings, balance=balance))
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    register_user(update.effective_user)
+    await register_user(update.effective_user)
     user_id = update.effective_user.id
     settings = get_user_settings(context)
-    balance = get_balance(user_id)
+    balance = await get_balance(user_id)
     await update.message.reply_text(
         format_settings_text(settings, balance=balance),
         reply_markup=build_settings_keyboard(settings),
@@ -281,7 +323,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    register_user(update.effective_user)
+    await register_user(update.effective_user)
     text = (
         "Как пользоваться ботом:\n\n"
         f"• 1 изображение = {TOKENS_PER_IMAGE} токенов.\n"
@@ -295,9 +337,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    register_user(update.effective_user)
+    await register_user(update.effective_user)
     user_id = update.effective_user.id
-    balance = get_balance(user_id)
+    balance = await get_balance(user_id)
     await update.message.reply_text(
         f"Ваш баланс: {balance} токенов.\n\n"
         f"1 изображение = {TOKENS_PER_IMAGE} токенов.\n"
@@ -306,10 +348,10 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 # ----------------------------------------
-# Админ-команды (текстовые)
+# Админские команды
 # ----------------------------------------
 async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    register_user(update.effective_user)
+    await register_user(update.effective_user)
     user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("У вас нет доступа к админ-командам.")
@@ -326,7 +368,7 @@ async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def add_tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    register_user(update.effective_user)
+    await register_user(update.effective_user)
     user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("У вас нет доступа к этой команде.")
@@ -351,16 +393,15 @@ async def add_tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("amount должен быть > 0.")
         return
 
-    add_tokens(target_id, amount)
-    new_balance = get_balance(target_id)
+    new_balance = await add_tokens(target_id, amount)
 
-    # ответ админу
+    # Ответ админу
     await update.message.reply_text(
         f"✅ Пользователю {target_id} начислено {amount} токенов.\n"
         f"Новый баланс: {new_balance}"
     )
 
-    # уведомление пользователю
+    # Уведомление пользователю
     try:
         await context.bot.send_message(
             chat_id=target_id,
@@ -374,125 +415,55 @@ async def add_tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.warning("Не удалось отправить уведомление пользователю %s: %s", target_id, e)
 
 
-# ----------------------------------------
-# Админ-панель (кнопки)
-# ----------------------------------------
-def build_admin_main_keyboard() -> InlineKeyboardMarkup:
-    keyboard = [
-        [InlineKeyboardButton("📋 Пользователи", callback_data="admin|users|0")],
-        [InlineKeyboardButton("❓ Помощь по админке", callback_data="admin|help")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+# ------- Админ-панель с кнопками -------
+def build_admin_main_keyboard(users: List[Dict]) -> InlineKeyboardMarkup:
+    rows: List[List[InlineKeyboardButton]] = []
+
+    for u in users:
+        uid = u["id"]
+        balance = u.get("balance", 0)
+        first_name = u.get("first_name") or ""
+        last_name = u.get("last_name") or ""
+        name = (first_name + " " + (last_name or "")).strip() or "Без имени"
+        label = f"{name} ({balance})"
+        rows.append([InlineKeyboardButton(label, callback_data=f"admin_user|{uid}")])
+
+    if not rows:
+        rows = [[InlineKeyboardButton("Нет пользователей", callback_data="admin_none")]]
+
+    return InlineKeyboardMarkup(rows)
+
+
+def build_admin_user_keyboard(uid: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("+150", callback_data=f"admin_add|{uid}|150"),
+                InlineKeyboardButton("+500", callback_data=f"admin_add|{uid}|500"),
+                InlineKeyboardButton("+1000", callback_data=f"admin_add|{uid}|1000"),
+            ],
+            [InlineKeyboardButton("⬅️ Назад к списку", callback_data="admin_back_main")],
+        ]
+    )
 
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    register_user(update.effective_user)
+    await register_user(update.effective_user)
     user_id = update.effective_user.id
     if not is_admin(user_id):
         await update.message.reply_text("У вас нет доступа к админ-панели.")
         return
 
-    total_users = len(USERS)
-    text = (
-        "Админ-панель nano-bot 👑\n\n"
-        f"Всего пользователей: {total_users}\n\n"
-        "Выберите действие:"
-    )
-    await update.message.reply_text(text, reply_markup=build_admin_main_keyboard())
+    users = await supabase_fetch_recent_users(limit=20)
+    total = len(users)
 
+    text_lines = ["Админ-панель nano-bot 👑", ""]
+    text_lines.append(f"Показаны последние {total} пользователей.")
+    text_lines.append("")
+    text_lines.append("Выберите пользователя, чтобы начислить токены:")
 
-def build_admin_users_page(page: int, page_size: int = 5) -> tuple[str, InlineKeyboardMarkup]:
-    user_ids = sorted(USERS.keys())
-    total = len(user_ids)
-    if total == 0:
-        text = "Пользователей пока нет."
-        return text, InlineKeyboardMarkup(
-            [[InlineKeyboardButton("⬅️ В админ-панель", callback_data="admin|back|main")]]
-        )
-
-    total_pages = max(1, math.ceil(total / page_size))
-    page = max(0, min(page, total_pages - 1))
-
-    start_idx = page * page_size
-    end_idx = start_idx + page_size
-    slice_ids = user_ids[start_idx:end_idx]
-
-    lines = [
-        f"Пользователи (стр. {page + 1}/{total_pages}, всего: {total})",
-        "",
-    ]
-    keyboard_rows = []
-
-    for uid in slice_ids:
-        info = USERS.get(uid, {})
-        username = info.get("username")
-        first_name = info.get("first_name") or ""
-        last_name = info.get("last_name") or ""
-        name = (first_name + " " + (last_name or "")).strip() or "Без имени"
-        balance = get_balance(uid)
-
-        tag = f"@{username}" if username else ""
-        lines.append(f"{uid} {tag} — {name} — {balance} токенов")
-
-        btn_label = f"{name} ({balance})"
-        keyboard_rows.append(
-            [InlineKeyboardButton(btn_label, callback_data=f"admin|user|{uid}|{page}")]
-        )
-
-    # навигация
-    nav_row = []
-    if page > 0:
-        nav_row.append(
-            InlineKeyboardButton("◀️", callback_data=f"admin|users|{page - 1}")
-        )
-    if page < total_pages - 1:
-        nav_row.append(
-            InlineKeyboardButton("▶️", callback_data=f"admin|users|{page + 1}")
-        )
-    if nav_row:
-        keyboard_rows.append(nav_row)
-
-    keyboard_rows.append(
-        [InlineKeyboardButton("⬅️ В админ-панель", callback_data="admin|back|main")]
-    )
-
-    text = "\n".join(lines)
-    return text, InlineKeyboardMarkup(keyboard_rows)
-
-
-def build_admin_user_detail(uid: int, page: int) -> tuple[str, InlineKeyboardMarkup]:
-    info = USERS.get(uid, {})
-    username = info.get("username")
-    first_name = info.get("first_name") or ""
-    last_name = info.get("last_name") or ""
-    name = (first_name + " " + (last_name or "")).strip() or "Без имени"
-    balance = get_balance(uid)
-
-    lines = [
-        "Карточка пользователя 👤",
-        "",
-        f"ID: {uid}",
-        f"Имя: {name}",
-        f"Username: @{username}" if username else "Username: —",
-        f"Баланс: {balance} токенов",
-        "",
-        "Начислить токены:",
-    ]
-
-    keyboard = [
-        [
-            InlineKeyboardButton("+150", callback_data=f"admin|add|{uid}|150|{page}"),
-            InlineKeyboardButton("+500", callback_data=f"admin|add|{uid}|500|{page}"),
-            InlineKeyboardButton("+1000", callback_data=f"admin|add|{uid}|1000|{page}"),
-        ],
-        [
-            InlineKeyboardButton(
-                "⬅️ Назад к списку", callback_data=f"admin|users|{page}"
-            )
-        ],
-    ]
-
-    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
+    kb = build_admin_main_keyboard(users)
+    await update.message.reply_text("\n".join(text_lines), reply_markup=kb)
 
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -505,80 +476,75 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer("Нет доступа", show_alert=True)
         return
 
-    await query.answer()
     data = query.data or ""
-    parts = data.split("|")
-
-    # форматы:
-    # admin|users|page
-    # admin|help
-    # admin|back|main
-    # admin|user|uid|page
-    # admin|add|uid|amount|page
-
-    if len(parts) < 2:
+    if data == "admin_none":
+        await query.answer()
         return
 
-    action = parts[1]
-
-    if action == "help":
-        text = (
-            "Админ-панель:\n\n"
-            "• «Пользователи» — список всех юзеров, их баланс.\n"
-            "• В карточке пользователя можно быстро начислить +150 / +500 / +1000 токенов.\n\n"
-            "Для произвольной суммы есть команда:\n"
-            "/add_tokens <telegram_id> <amount>"
-        )
-        await query.message.edit_text(text, reply_markup=build_admin_main_keyboard())
+    if data == "admin_back_main":
+        await query.answer()
+        users = await supabase_fetch_recent_users(limit=20)
+        total = len(users)
+        text_lines = ["Админ-панель nano-bot 👑", ""]
+        text_lines.append(f"Показаны последние {total} пользователей.")
+        text_lines.append("")
+        text_lines.append("Выберите пользователя, чтобы начислить токены:")
+        kb = build_admin_main_keyboard(users)
+        await query.message.edit_text("\n".join(text_lines), reply_markup=kb)
         return
 
-    if action == "back" and len(parts) >= 3 and parts[2] == "main":
-        total_users = len(USERS)
-        text = (
-            "Админ-панель nano-bot 👑\n\n"
-            f"Всего пользователей: {total_users}\n\n"
-            "Выберите действие:"
-        )
-        await query.message.edit_text(text, reply_markup=build_admin_main_keyboard())
-        return
-
-    if action == "users" and len(parts) >= 3:
+    if data.startswith("admin_user|"):
+        await query.answer()
+        _, uid_str = data.split("|", 1)
         try:
-            page = int(parts[2])
-        except ValueError:
-            page = 0
-        text, kb = build_admin_users_page(page)
-        await query.message.edit_text(text, reply_markup=kb)
-        return
-
-    if action == "user" and len(parts) >= 4:
-        try:
-            uid = int(parts[2])
-            page = int(parts[3])
-        except ValueError:
-            return
-        text, kb = build_admin_user_detail(uid, page)
-        await query.message.edit_text(text, reply_markup=kb)
-        return
-
-    if action == "add" and len(parts) >= 5:
-        try:
-            uid = int(parts[2])
-            amount = int(parts[3])
-            page = int(parts[4])
+            uid = int(uid_str)
         except ValueError:
             return
 
-        add_tokens(uid, amount)
-        new_balance = get_balance(uid)
+        user = await supabase_get_user(uid)
+        if not user:
+            await query.message.edit_text("Пользователь не найден.")
+            return
 
-        # тост админу
+        first_name = user.get("first_name") or ""
+        last_name = user.get("last_name") or ""
+        name = (first_name + " " + (last_name or "")).strip() or "Без имени"
+        username = user.get("username")
+        balance = user.get("balance", 0)
+
+        lines = [
+            "Карточка пользователя 👤",
+            "",
+            f"ID: {uid}",
+            f"Имя: {name}",
+            f"Username: @{username}" if username else "Username: —",
+            f"Баланс: {balance} токенов",
+            "",
+            "Начислить токены:",
+        ]
+
+        kb = build_admin_user_keyboard(uid)
+        await query.message.edit_text("\n".join(lines), reply_markup=kb)
+        return
+
+    if data.startswith("admin_add|"):
+        await query.answer()
+        try:
+            _, uid_str, amount_str = data.split("|", 2)
+            uid = int(uid_str)
+            amount = int(amount_str)
+        except ValueError:
+            return
+
+        new_balance = await add_tokens(uid, amount)
+
+        # Тост админу
         await query.answer(
             f"Начислено {amount} токенов (баланс {new_balance})",
             show_alert=False,
         )
 
-        # уведомление пользователю
+        # Уведомление пользователю
         try:
             await context.bot.send_message(
                 chat_id=uid,
@@ -591,9 +557,30 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception as e:
             logger.warning("Не удалось отправить уведомление пользователю %s: %s", uid, e)
 
-        # обновляем карточку
-        text, kb = build_admin_user_detail(uid, page)
-        await query.message.edit_text(text, reply_markup=kb)
+        # Обновляем карточку
+        user = await supabase_get_user(uid)
+        if not user:
+            await query.message.edit_text("Пользователь не найден.")
+            return
+
+        first_name = user.get("first_name") or ""
+        last_name = user.get("last_name") or ""
+        name = (first_name + " " + (last_name or "")).strip() or "Без имени"
+        username = user.get("username")
+        balance = user.get("balance", 0)
+
+        lines = [
+            "Карточка пользователя 👤",
+            "",
+            f"ID: {uid}",
+            f"Имя: {name}",
+            f"Username: @{username}" if username else "Username: —",
+            f"Баланс: {balance} токенов",
+            "",
+            "Начислить токены:",
+        ]
+        kb = build_admin_user_keyboard(uid)
+        await query.message.edit_text("\n".join(lines), reply_markup=kb)
         return
 
 
@@ -601,7 +588,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # Reply-кнопки пользователя
 # ----------------------------------------
 async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    register_user(update.effective_user)
+    await register_user(update.effective_user)
     text = (update.message.text or "").strip()
 
     if text == "🚀 Старт":
@@ -622,25 +609,30 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 # ----------------------------------------
-# Инлайн-кнопки настроек генерации
+# Callback настроек генерации
 # ----------------------------------------
 async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query:
         return
 
+    # Не трогаем admin_* callbacks
+    if (query.data or "").startswith("admin_"):
+        return
+
     await query.answer()
     data = query.data or ""
-    if not data or not data.startswith(("set|", "reset|", "open|")):
-        return  # остальные колбеки — для админки
-
     parts = data.split("|")
+
+    if not parts:
+        return
+
     action = parts[0]
 
     if action == "reset":
         context.user_data.clear()
         settings = get_user_settings(context)
-        balance = get_balance(query.from_user.id)
+        balance = await get_balance(query.from_user.id)
         await query.message.edit_text(
             "Настройки сброшены к стандартным.\n\n"
             + format_settings_text(settings, balance=balance),
@@ -655,27 +647,11 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if key in settings:
             settings[key] = value
 
-        balance = get_balance(query.from_user.id)
+        balance = await get_balance(query.from_user.id)
         await query.message.edit_text(
             format_settings_text(settings, balance=balance),
             reply_markup=build_settings_keyboard(settings),
         )
-        return
-
-    if action == "open" and len(parts) >= 2:
-        target = parts[1]
-        if target == "settings":
-            settings = get_user_settings(context)
-            balance = get_balance(query.from_user.id)
-            await query.message.edit_text(
-                format_settings_text(settings, balance=balance),
-                reply_markup=build_settings_keyboard(settings),
-            )
-        elif target == "help":
-            await query.message.edit_text(
-                "Это nano-bot на базе google/nano-banana-pro.\n\n"
-                "Используй /menu, чтобы настроить генерацию, и просто отправляй промты.",
-            )
         return
 
 
@@ -686,11 +662,11 @@ async def generate_with_nano_banana(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     prompt: str,
-    image_urls: list[str] | None = None,
+    image_urls: Optional[List[str]] = None,
 ) -> None:
-    register_user(update.effective_user)
+    await register_user(update.effective_user)
     user_id = update.effective_user.id
-    balance = get_balance(user_id)
+    balance = await get_balance(user_id)
 
     if balance < TOKENS_PER_IMAGE:
         await update.message.reply_text(
@@ -726,7 +702,7 @@ async def generate_with_nano_banana(
 
         logger.info("Raw output from replicate.run: %r (type=%s)", output, type(output))
 
-        image_url = None
+        image_url: Optional[str] = None
         if isinstance(output, list) and output:
             image_url = output[0]
         elif isinstance(output, str):
@@ -753,9 +729,9 @@ async def generate_with_nano_banana(
         await update.message.reply_photo(photo=bio)
         logger.info("Image successfully sent to user")
 
-        # Списываем токены только после успешной отправки изображения
-        if deduct_tokens(user_id, TOKENS_PER_IMAGE):
-            new_balance = get_balance(user_id)
+        # Списываем токены только после успешной отправки
+        if await deduct_tokens(user_id, TOKENS_PER_IMAGE):
+            new_balance = await get_balance(user_id)
             await update.message.reply_text(
                 f"Списано {TOKENS_PER_IMAGE} токенов. Новый баланс: {new_balance}."
             )
@@ -794,7 +770,7 @@ async def handle_text_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # Фото как референс
 # ----------------------------------------
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    register_user(update.effective_user)
+    await register_user(update.effective_user)
     message = update.message
     if not message or not message.photo:
         return
@@ -811,7 +787,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 # ----------------------------------------
-# Точка входа
+# main
 # ----------------------------------------
 def main() -> None:
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
@@ -828,7 +804,7 @@ def main() -> None:
     application.add_handler(CommandHandler("add_tokens", add_tokens_command))
 
     # CallbackQuery: сначала админка, потом настройки генерации
-    application.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin\\|"))
+    application.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
     application.add_handler(CallbackQueryHandler(settings_callback))
 
     # Фото и текст
