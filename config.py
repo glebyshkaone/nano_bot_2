@@ -1,0 +1,2 @@
+# config.py
+BOT_TOKEN='YOUR_TOKEN_HERE'
