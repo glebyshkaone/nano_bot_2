@@ -1,6 +1,8 @@
 import os
+import json
 import logging
 from io import BytesIO
+from pathlib import Path
 
 import httpx
 import replicate
@@ -29,13 +31,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-logger.info("Starting nano-bot (UI + replicate.run + refs)")
+logger.info("Starting nano-bot (UI + refs + tokens)")
 
 # ----------------------------------------
 # Переменные окружения
 # ----------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+
+# список админов через запятую: ADMIN_IDS=12345,67890
+ADMIN_IDS = []
+_admin_ids_raw = os.getenv("ADMIN_IDS", "").strip()
+if _admin_ids_raw:
+    try:
+        ADMIN_IDS = [int(x) for x in _admin_ids_raw.split(",") if x.strip()]
+    except ValueError:
+        logger.error("ADMIN_IDS env parse error, value=%r", _admin_ids_raw)
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set")
@@ -50,7 +61,55 @@ logger.info(
 )
 
 # ----------------------------------------
-# Настройки по умолчанию
+# Токены пользователей
+# ----------------------------------------
+TOKENS_FILE = Path("user_tokens.json")
+TOKENS_PER_IMAGE = 150  # 1 генерация = 150 пользовательских токенов
+
+
+def load_token_store() -> dict:
+    if TOKENS_FILE.exists():
+        try:
+            with TOKENS_FILE.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+                # ключи в json — строки, приводим к int
+                return {int(k): int(v) for k, v in data.items()}
+        except Exception as e:
+            logger.error("Failed to load token store: %s", e)
+    return {}
+
+
+def save_token_store(store: dict) -> None:
+    try:
+        with TOKENS_FILE.open("w", encoding="utf-8") as f:
+            json.dump({str(k): int(v) for k, v in store.items()}, f)
+    except Exception as e:
+        logger.error("Failed to save token store: %s", e)
+
+
+TOKEN_STORE = load_token_store()
+
+
+def get_balance(user_id: int) -> int:
+    return int(TOKEN_STORE.get(user_id, 0))
+
+
+def add_tokens(user_id: int, amount: int) -> None:
+    TOKEN_STORE[user_id] = get_balance(user_id) + amount
+    save_token_store(TOKEN_STORE)
+
+
+def deduct_tokens(user_id: int, amount: int) -> bool:
+    balance = get_balance(user_id)
+    if balance < amount:
+        return False
+    TOKEN_STORE[user_id] = balance - amount
+    save_token_store(TOKEN_STORE)
+    return True
+
+
+# ----------------------------------------
+# Настройки модели по умолчанию
 # ----------------------------------------
 DEFAULT_SETTINGS = {
     "aspect_ratio": "4:3",
@@ -67,13 +126,16 @@ def get_user_settings(context: ContextTypes.DEFAULT_TYPE) -> dict:
     return data
 
 
-def format_settings_text(settings: dict) -> str:
+def format_settings_text(settings: dict, balance: int | None = None) -> str:
+    bal_part = f"Ваш баланс: {balance} токенов\n\n" if balance is not None else ""
     return (
-        "Текущие настройки генерации:\n"
+        bal_part
+        + "Текущие настройки генерации:\n"
         f"• Соотношение сторон: {settings['aspect_ratio']}\n"
         f"• Разрешение: {settings['resolution']}\n"
         f"• Формат: {settings['output_format']}\n"
         f"• Фильтр безопасности: {settings['safety_filter_level']}\n\n"
+        f"Стоимость: {TOKENS_PER_IMAGE} токенов за одно изображение.\n\n"
         "Отправь текстовый промт — я сгенерирую картинку по этим настройкам.\n"
         "Можешь также отправить фото с подписью — оно будет использовано как референс."
     )
@@ -151,7 +213,6 @@ def build_settings_keyboard(settings: dict) -> InlineKeyboardMarkup:
                 callback_data="set|safety_filter_level|block_low_and_above",
             ),
         ],
-        # Reset
         [
             InlineKeyboardButton(
                 "🔁 Сбросить к стандартным",
@@ -159,7 +220,6 @@ def build_settings_keyboard(settings: dict) -> InlineKeyboardMarkup:
             )
         ],
     ]
-
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -170,6 +230,7 @@ def build_reply_keyboard() -> ReplyKeyboardMarkup:
             KeyboardButton("🎛 Меню"),
         ],
         [
+            KeyboardButton("💰 Баланс"),
             KeyboardButton("ℹ Помощь"),
         ],
     ]
@@ -180,25 +241,31 @@ def build_reply_keyboard() -> ReplyKeyboardMarkup:
 # Команды
 # ----------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
     settings = get_user_settings(context)
+    balance = get_balance(user_id)
     text = (
         "Привет! Я nano-bot 🤖\n\n"
         "Отправь мне текстовый промт — я сгенерирую картинку через "
         "google/nano-banana-pro на Replicate.\n\n"
         "Можешь отправить фото с подписью — я использую его как референс (image_input).\n\n"
-        "Используй кнопки снизу или команду /menu, чтобы настроить параметры."
+        "Чтобы пополнить баланс, напиши @glebyshkaone.\n"
     )
     await update.message.reply_text(
         text,
         reply_markup=build_reply_keyboard(),
     )
-    await update.message.reply_text(format_settings_text(settings))
+    await update.message.reply_text(
+        format_settings_text(settings, balance=balance)
+    )
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
     settings = get_user_settings(context)
+    balance = get_balance(user_id)
     await update.message.reply_text(
-        format_settings_text(settings),
+        format_settings_text(settings, balance=balance),
         reply_markup=build_settings_keyboard(settings),
     )
 
@@ -206,17 +273,81 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "Как пользоваться ботом:\n\n"
+        f"• 1 изображение = {TOKENS_PER_IMAGE} токенов.\n"
+        "• Пополнить баланс можно, написав @glebyshkaone.\n\n"
+        "Шаги:\n"
         "1. Нажми /menu или кнопку «🎛 Меню».\n"
-        "2. В настройках выбери соотношение сторон, разрешение, формат и уровень фильтра.\n"
-        "3. Отправь текстовый промт.\n"
-        "4. Либо отправь фото с подписью — фото будет передано в nano-banana как image_input.\n\n"
-        "Сейчас это MVP: одна модель (google/nano-banana-pro)."
+        "2. Выбери настройки генерации.\n"
+        "3. Отправь текстовый промт или фото с подписью.\n"
+        "4. Если хватает токенов — я сгенерирую картинку."
     )
     await update.message.reply_text(text)
 
 
+async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    balance = get_balance(user_id)
+    await update.message.reply_text(
+        f"Ваш баланс: {balance} токенов.\n\n"
+        f"1 изображение = {TOKENS_PER_IMAGE} токенов.\n"
+        "Чтобы пополнить баланс, напишите @glebyshkaone."
+    )
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
+async def admin_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("У вас нет доступа к админ-командам.")
+        return
+
+    text = (
+        "Админ-команды:\n\n"
+        "/add_tokens <telegram_id> <amount> — начислить токены пользователю.\n"
+        "/balance — посмотреть свой баланс (как обычный пользователь).\n\n"
+        "Пример:\n"
+        "/add_tokens 123456789 500"
+    )
+    await update.message.reply_text(text)
+
+
+async def add_tokens_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("У вас нет доступа к этой команде.")
+        return
+
+    args = context.args
+    if len(args) != 2:
+        await update.message.reply_text(
+            "Использование: /add_tokens <telegram_id> <amount>\n"
+            "Пример: /add_tokens 123456789 500"
+        )
+        return
+
+    try:
+        target_id = int(args[0])
+        amount = int(args[1])
+    except ValueError:
+        await update.message.reply_text("telegram_id и amount должны быть числами.")
+        return
+
+    if amount <= 0:
+        await update.message.reply_text("amount должен быть > 0.")
+        return
+
+    add_tokens(target_id, amount)
+    await update.message.reply_text(
+        f"✅ Пользователю {target_id} начислено {amount} токенов.\n"
+        f"Новый баланс: {get_balance(target_id)}"
+    )
+
+
 # ----------------------------------------
-# Обработка reply-кнопок
+# Reply-кнопки
 # ----------------------------------------
 async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.message.text or "").strip()
@@ -230,8 +361,11 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
     if text == "ℹ Помощь":
         await help_command(update, context)
         return
+    if text == "💰 Баланс":
+        await balance_command(update, context)
+        return
 
-    # Всё остальное — считаем текстовым промтом
+    # Всё остальное — текстовый промт
     await handle_text_prompt(update, context)
 
 
@@ -256,8 +390,9 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         target = parts[1]
         if target == "settings":
             settings = get_user_settings(context)
+            balance = get_balance(query.from_user.id)
             await query.message.edit_text(
-                format_settings_text(settings),
+                format_settings_text(settings, balance=balance),
                 reply_markup=build_settings_keyboard(settings),
             )
         elif target == "help":
@@ -270,9 +405,10 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if action == "reset":
         context.user_data.clear()
         settings = get_user_settings(context)
+        balance = get_balance(query.from_user.id)
         await query.message.edit_text(
             "Настройки сброшены к стандартным.\n\n"
-            + format_settings_text(settings),
+            + format_settings_text(settings, balance=balance),
             reply_markup=build_settings_keyboard(settings),
         )
         return
@@ -284,15 +420,16 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if key in settings:
             settings[key] = value
 
+        balance = get_balance(query.from_user.id)
         await query.message.edit_text(
-            format_settings_text(settings),
+            format_settings_text(settings, balance=balance),
             reply_markup=build_settings_keyboard(settings),
         )
         return
 
 
 # ----------------------------------------
-# Универсальная функция генерации
+# Генерация через nano-banana
 # ----------------------------------------
 async def generate_with_nano_banana(
     update: Update,
@@ -300,7 +437,16 @@ async def generate_with_nano_banana(
     prompt: str,
     image_urls: list[str] | None = None,
 ) -> None:
-    """Вызов nano-banana с учетом настроек и опциональных референсов."""
+    user_id = update.effective_user.id
+    balance = get_balance(user_id)
+
+    if balance < TOKENS_PER_IMAGE:
+        await update.message.reply_text(
+            f"Недостаточно токенов: на балансе {balance}, нужно {TOKENS_PER_IMAGE}.\n\n"
+            "Напишите @glebyshkaone, чтобы пополнить баланс."
+        )
+        return
+
     settings = get_user_settings(context)
 
     logger.info("Prompt: %s", prompt)
@@ -318,7 +464,6 @@ async def generate_with_nano_banana(
             "safety_filter_level": settings["safety_filter_level"],
         }
 
-        # если есть референсы — добавляем image_input
         if image_urls:
             input_payload["image_input"] = image_urls
 
@@ -356,16 +501,28 @@ async def generate_with_nano_banana(
         await update.message.reply_photo(photo=bio)
         logger.info("Image successfully sent to user")
 
+        # Списываем токены только после успешной отправки изображения
+        if deduct_tokens(user_id, TOKENS_PER_IMAGE):
+            new_balance = get_balance(user_id)
+            await update.message.reply_text(
+                f"Списано {TOKENS_PER_IMAGE} токенов. Новый баланс: {new_balance}."
+            )
+        else:
+            # Теоретически не должно происходить, но на всякий случай
+            await update.message.reply_text(
+                "Изображение сгенерировано, но не удалось списать токены — обратитесь к администратору."
+            )
+
     except Exception as e:
         logger.exception("Ошибка при генерации/отправке")
         await update.message.reply_text(
             f"Произошла ошибка при генерации: {e}\n"
-            "Проверь токен Replicate в Railway и попробуй ещё раз."
+            "Если ошибка повторяется — напишите @glebyshkaone."
         )
 
 
 # ----------------------------------------
-# Текстовый промт (без фото)
+# Текстовый промт
 # ----------------------------------------
 async def handle_text_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
@@ -390,14 +547,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not message or not message.photo:
         return
 
-    # Берем самое большое фото (последний элемент списка)
     photo = message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
-
-    # Telegram даёт прямой URL к файлу, его можно отдать Replicate
     image_url = file.file_path
 
-    # caption используем как промт, если он есть
     prompt = (message.caption or "").strip()
     if not prompt:
         prompt = "image to image generation"
@@ -414,14 +567,13 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("balance", balance_command))
 
-    # Инлайн-кнопки настроек
+    application.add_handler(CommandHandler("admin_help", admin_help_command))
+    application.add_handler(CommandHandler("add_tokens", add_tokens_command))
+
     application.add_handler(CallbackQueryHandler(settings_callback))
-
-    # Фото (референсы)
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-
-    # Текстовые сообщения (reply-кнопки + обычный текст-промт)
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_buttons)
     )
