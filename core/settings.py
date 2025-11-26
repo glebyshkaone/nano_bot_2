@@ -13,7 +13,7 @@ from core.balance import get_generation_cost_tokens
 DEFAULT_SETTINGS = {
     "model": "banana",
 
-    # общие поля / banana / banana_pro
+    # общие / banana / banana_pro
     "aspect_ratio": "match_input_image",
     "output_format": "jpg",
     "resolution": "2K",
@@ -21,9 +21,9 @@ DEFAULT_SETTINGS = {
 
     # flux defaults
     "raw": "false",
-    "seed": "off",
-    "safety_tolerance": "2",
-    "image_prompt_strength": "0.1",
+    "seed": "off",                 # строка "off" или число в виде строки
+    "safety_tolerance": "2",       # "1"–"6"
+    "image_prompt_strength": "0.1" # "0.0"–"1.0"
 }
 
 
@@ -57,6 +57,12 @@ def format_settings_text(settings: Dict, balance: Optional[int] = None) -> str:
         value = settings.get(key)
         lines.append(f"{label}: {value}")
 
+    # Доп.поля flux, которые задаются текстом
+    if model_key == "flux_ultra":
+        lines.append(f"Seed: {settings.get('seed', 'off')}")
+        lines.append(f"Safety: {settings.get('safety_tolerance', '2')}")
+        lines.append(f"Strength: {settings.get('image_prompt_strength', '0.1')}")
+
     lines.append("\nОтправь текстовый промт — я сгенерирую картинку.")
     lines.append("Можно отправить фото с подписью — оно станет референсом.")
 
@@ -84,7 +90,7 @@ def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
         )
     keyboard.append(row_models)
 
-    # ---- поля текущей модели ----
+    # ---- поля текущей модели (по схеме) ----
     schema = MODEL_SETTINGS_SCHEMA.get(model_key, [])
     for field in schema:
         key = field["key"]
@@ -105,6 +111,25 @@ def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
                 row = []
         if row:
             keyboard.append(row)
+
+    # ---- доп.элементы интерфейса для FLUX ----
+    if model_key == "flux_ultra":
+        keyboard.append([
+            InlineKeyboardButton(
+                f"Seed: {settings.get('seed', 'off')}",
+                callback_data="input|seed",
+            ),
+            InlineKeyboardButton(
+                f"Safety: {settings.get('safety_tolerance', '2')}",
+                callback_data="input|safety_tolerance",
+            ),
+        ])
+        keyboard.append([
+            InlineKeyboardButton(
+                f"Strength: {settings.get('image_prompt_strength', '0.1')}",
+                callback_data="input|image_prompt_strength",
+            ),
+        ])
 
     # ---- reset ----
     keyboard.append(
