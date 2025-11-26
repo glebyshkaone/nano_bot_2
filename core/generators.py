@@ -1,4 +1,3 @@
-import io
 import logging
 from typing import Dict, List, Tuple, Optional
 
@@ -8,8 +7,40 @@ from config import REPLICATE_API_TOKEN, MODEL_INFO
 
 logger = logging.getLogger(__name__)
 
-# Инициализация клиента Replicate
+# Инициализация клиента Replicate (если нужен)
 replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
+
+
+def _extract_url_and_bytes(output) -> Tuple[Optional[str], Optional[bytes]]:
+    """
+    Универсальный парсер результата Replicate:
+    - поддерживает объект с .url / .read (метод или property)
+    - поддерживает строку (url)
+    - поддерживает list[строка] / list[dict{url=...}]
+    """
+    url = None
+    data = None
+
+    # 1) Объект с атрибутами .url / .read
+    if hasattr(output, "url"):
+        attr = getattr(output, "url")
+        url = attr() if callable(attr) else attr
+    if hasattr(output, "read"):
+        attr = getattr(output, "read")
+        data = attr() if callable(attr) else attr
+
+    # 2) Если url всё ещё нет — пробуем более «сырые» варианты
+    if url is None:
+        if isinstance(output, str):
+            url = output
+        elif isinstance(output, (list, tuple)) and output:
+            first = output[0]
+            if isinstance(first, str):
+                url = first
+            elif isinstance(first, dict) and "url" in first:
+                url = first["url"]
+
+    return url, data
 
 
 async def run_model(
@@ -50,10 +81,11 @@ async def run_model(
             input=payload,
         )
 
-        # Новые модели nano-banana возвращают file-like объект
-        image_url = output.url()
-        image_bytes = output.read()
-        return image_url, image_bytes
+        image_url, image_bytes = _extract_url_and_bytes(output)
+        if image_url is None:
+            raise ValueError("Не удалось получить URL изображения от nano-banana")
+
+        return image_url, image_bytes or b""
 
     # -------- BANANA PRO ----------
     if model_key == "banana_pro":
@@ -71,9 +103,11 @@ async def run_model(
             input=payload,
         )
 
-        image_url = output.url()
-        image_bytes = output.read()
-        return image_url, image_bytes
+        image_url, image_bytes = _extract_url_and_bytes(output)
+        if image_url is None:
+            raise ValueError("Не удалось получить URL изображения от nano-banana-pro")
+
+        return image_url, image_bytes or b""
 
     # -------- FLUX 1.1 PRO ULTRA ----------
     if model_key == "flux_ultra":
@@ -111,9 +145,11 @@ async def run_model(
             input=payload,
         )
 
-        image_url = output.url()
-        image_bytes = output.read()
-        return image_url, image_bytes
+        image_url, image_bytes = _extract_url_and_bytes(output)
+        if image_url is None:
+            raise ValueError("Не удалось получить URL изображения от flux_ultra")
 
-    # fallback (если что-то пошло не так с model_key)
+        return image_url, image_bytes or b""
+
+    # fallback
     raise ValueError(f"Unsupported model: {model_key}")
