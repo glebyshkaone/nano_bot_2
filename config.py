@@ -45,7 +45,7 @@ MODEL_INFO = {
         "label": "Nano Banana",
         "emoji": "🍌",
         "replicate": "google/nano-banana",
-        "base_cost": 50,  # токенов за изображение
+        "base_cost": 50,
         "pricing_text": "50 токенов за изображение",
     },
     "banana_pro": {
@@ -64,7 +64,6 @@ MODEL_INFO = {
         "base_cost": 80,  # ~0.12$ при x2 от себестоимости 0.06$
         "pricing_text": "80 токенов за изображение",
     },
-    # сюда же потом добавятся новые модели
 }
 
 # ---------------------------------------------------------
@@ -129,18 +128,14 @@ MODEL_SETTINGS_SCHEMA = {
     ],
 
     # ---------- FLUX 1.1 PRO ULTRA ----------
+    # здесь только то, что удобно выбирать по кнопкам.
+    # seed / safety / strength будем задавать текстом.
     "flux_ultra": [
         {
             "key": "raw",
             "label": "Raw Mode",
-            "options": ["false", "true"],  # boolean интерфейсом
+            "options": ["false", "true"],
             "per_row": 2,
-        },
-        {
-            "key": "seed",
-            "label": "Seed",
-            "options": ["off", "42", "1337", "7777"],
-            "per_row": 4,
         },
         {
             "key": "aspect_ratio",
@@ -156,18 +151,6 @@ MODEL_SETTINGS_SCHEMA = {
             "label": "Формат",
             "options": ["jpg", "png"],
             "per_row": 2,
-        },
-        {
-            "key": "safety_tolerance",
-            "label": "Safety",
-            "options": ["1", "2", "3", "4", "5", "6"],
-            "per_row": 3,
-        },
-        {
-            "key": "image_prompt_strength",
-            "label": "Image Strength",
-            "options": ["0.1", "0.2", "0.3", "0.5", "0.8", "1.0"],
-            "per_row": 3,
         },
     ],
 }
