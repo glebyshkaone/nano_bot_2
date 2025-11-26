@@ -35,17 +35,19 @@ SUPABASE_HEADERS_BASE = {
 }
 
 # ----------------------------------------
-# Модели и цены
+# Модели и базовая стоимость в токенах
 # ----------------------------------------
+# base_cost — стоимость в токенах для "обычного" режима.
+# Для banana_pro 4K стоимость считается как base_cost * 2.
 MODEL_INFO = {
     "banana": {
         "label": "Banana",
         "replicate": "google/nano-banana",
-        "cost": 50,
+        "base_cost": 50,   # 50 токенов за генерацию
     },
     "banana_pro": {
         "label": "Banana PRO",
         "replicate": "google/nano-banana-pro",
-        "cost": 150,
+        "base_cost": 150,  # 150 токенов за 1K/2K, 300 токенов за 4K
     },
 }
