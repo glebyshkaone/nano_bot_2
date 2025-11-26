@@ -1,26 +1,33 @@
 from typing import Dict, Optional, List, Tuple
 import logging
-from io import BytesIO
-
-import httpx
 import replicate
+
+from config import MODEL_INFO
 
 logger = logging.getLogger(__name__)
 
 
-async def run_nano_banana(
+async def run_model(
     prompt: str,
     settings: Dict,
     image_urls: Optional[List[str]] = None,
 ) -> Tuple[str, bytes]:
     """
-    Вызывает модель и возвращает (image_url, image_bytes).
-    Исключения наружу — пусть хендлер ловит.
-    """
-    logger.info("Prompt: %s", prompt)
-    logger.info("Settings: %s", settings)
-    logger.info("Image refs: %s", image_urls)
+    Вызывает модель (banana / banana_pro) через Replicate
+    и возвращает (image_url, image_bytes).
 
+    Для nano-banana / nano-banana-pro Replicate возвращает
+    объект файла с методами .url() и .read().
+    """
+
+    # 1) выбираем модель
+    model_key = settings.get("model", "banana")
+    model_info = MODEL_INFO.get(model_key, MODEL_INFO["banana"])
+    model_name = model_info["replicate"]
+
+    logger.info("Using model %s for prompt: %s", model_name, prompt)
+
+    # 2) собираем payload
     input_payload = {
         "prompt": prompt,
         "aspect_ratio": settings["aspect_ratio"],
@@ -28,27 +35,41 @@ async def run_nano_banana(
         "output_format": settings["output_format"],
         "safety_filter_level": settings["safety_filter_level"],
     }
+
     if image_urls:
         input_payload["image_input"] = image_urls
 
-    output = replicate.run("google/nano-banana-pro", input=input_payload)
-    logger.info("Raw output from replicate.run: %r (type=%s)", output, type(output))
+    # 3) вызов модели
+    output = replicate.run(model_name, input=input_payload)
+    logger.info("Raw output from Replicate: %r (%s)", output, type(output))
 
     image_url: Optional[str] = None
-    if isinstance(output, list) and output:
+    image_bytes: Optional[bytes] = None
+
+    # Официальный формат nano-banana: объект с .url() и .read()
+    if hasattr(output, "url") and hasattr(output, "read"):
+        url_val = output.url
+        image_url = url_val() if callable(url_val) else url_val
+
+        read_val = output.read
+        image_bytes = read_val() if callable(read_val) else read_val
+
+    elif isinstance(output, list) and output:
+        # fallback — если вдруг вернёт список URL
         image_url = output[0]
+        raise RuntimeError(
+            "Модель вернула список URL, а не объект файла. "
+            "Обнови генератор, чтобы скачивать картинку по ссылке."
+        )
+
     elif isinstance(output, str):
         image_url = output
-    elif hasattr(output, "url"):
-        val = output.url
-        image_url = val() if callable(val) else val
+        raise RuntimeError(
+            "Модель вернула строку-URL, а не объект файла. "
+            "Обнови генератор, чтобы скачивать картинку по ссылке."
+        )
 
-    if not image_url:
-        raise RuntimeError(f"Не удалось получить URL изображения из ответа модели: {output!r}")
+    if not image_url or image_bytes is None:
+        raise RuntimeError(f"Не удалось извлечь файл из ответа модели: {output!r}")
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(image_url)
-        resp.raise_for_status()
-        img_bytes = resp.content
-
-    return image_url, img_bytes
+    return image_url, image_bytes
