@@ -36,11 +36,11 @@ logger = logging.getLogger(__name__)
 # CONSTANTS FOR PAYMENTS
 # ---------------------------------------------------------
 
-# 150 токенов = 25 звёзд
 STARS_PER_150_TOKENS = 25
 PAYLOAD_PREFIX = "buy_tokens:"
 TOKEN_PACKS = [500, 1000, 1500]
 CUSTOM_TOKENS_KEY = "awaiting_custom_tokens"
+FLUX_INPUT_KEY = "awaiting_flux_input"  # seed / safety / strength
 
 
 def tokens_to_stars(tokens: int) -> int:
@@ -161,7 +161,7 @@ async def model_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lines = ["🧠 Выбор модели генерации:\n"]
     for key, info in MODEL_INFO.items():
         emoji = info.get("emoji", "🧠")
-        pricing = info.get("pricing_text", f"{info['base_cost']} tokенов")
+        pricing = info.get("pricing_text", f"{info['base_cost']} токенов")
         prefix = "✅ " if key == current_model else ""
         lines.append(f"{prefix}{emoji} {info['label']} — {pricing}")
     lines.append("")
@@ -195,7 +195,7 @@ async def model_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 # ---------------------------------------------------------
-# GENERATION (CHARGE TOKENS ONLY ON SUCCESS)
+# GENERATION
 # ---------------------------------------------------------
 
 async def generate_with_nano_banana(
@@ -208,7 +208,6 @@ async def generate_with_nano_banana(
     user_id = update.effective_user.id
     settings = get_user_settings(context)
 
-    # 1. Проверяем баланс (без списания)
     cost = get_generation_cost_tokens(settings)
     balance = await get_balance(user_id)
 
@@ -222,14 +221,12 @@ async def generate_with_nano_banana(
     await update.message.reply_text("Генерация запущена… ⚙️")
 
     try:
-        # 2. Генерация
         image_url, img_bytes = await run_model(
             prompt,
             settings,
             image_urls=image_urls,
         )
 
-        # 3. Успешная генерация → списываем токены
         ok, used_cost, new_balance = await deduct_tokens(user_id, settings)
         if not ok:
             logger.error(
@@ -239,14 +236,12 @@ async def generate_with_nano_banana(
             used_cost = 0
             new_balance = await get_balance(user_id)
 
-        # 4. Отправляем изображение
         bio = BytesIO(img_bytes)
         bio.name = f"nano-bot.{settings.get('output_format', 'png')}"
         bio.seek(0)
 
         await update.message.reply_photo(photo=bio)
 
-        # 5. Сообщение о списании
         if used_cost > 0:
             await update.message.reply_text(
                 f"Списано {used_cost} токенов. Новый баланс: {new_balance}."
@@ -257,7 +252,6 @@ async def generate_with_nano_banana(
                 "Если что-то идёт не так — напишите @glebyshkaone."
             )
 
-        # 6. Логирование
         await log_generation(
             user_id=user_id,
             prompt=prompt,
@@ -344,7 +338,6 @@ async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     data = query.data or ""
     chat_id = query.message.chat_id
 
-    # Готовые паки
     if data.startswith("buy_pack|"):
         try:
             tokens = int(data.split("|")[1])
@@ -366,7 +359,7 @@ async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             title=f"{tokens} токенов",
             description="Пакет токенов для nano-bot.",
             payload=payload,
-            provider_token="",  # для Stars — пустая строка
+            provider_token="",
             currency="XTR",
             prices=prices,
             max_tip_amount=0,
@@ -380,7 +373,6 @@ async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    # Произвольное количество токенов
     if data == "buy_custom":
         context.user_data[CUSTOM_TOKENS_KEY] = True
         await query.message.reply_text(
@@ -429,7 +421,7 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
 
 # ---------------------------------------------------------
-# REPLY BUTTONS + CUSTOM TOKEN INPUT
+# REPLY BUTTONS + CUSTOM INPUT
 # ---------------------------------------------------------
 
 async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -478,6 +470,50 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
+    # --- кастомный ввод параметров FLUX ---
+    pending = context.user_data.get(FLUX_INPUT_KEY)
+    if pending:
+        context.user_data[FLUX_INPUT_KEY] = None
+        settings = get_user_settings(context)
+
+        if pending == "seed":
+            value = text.strip()
+            if value.lower() == "off":
+                settings["seed"] = "off"
+                msg = "Seed отключён (off)."
+            else:
+                try:
+                    iv = int(value)
+                    settings["seed"] = str(iv)
+                    msg = f"Seed установлен: {iv}."
+                except ValueError:
+                    msg = "Seed должен быть целым числом или off. Значение не изменено."
+        elif pending == "safety_tolerance":
+            try:
+                iv = int(float(text.replace(",", ".")))
+                iv = max(1, min(6, iv))
+                settings["safety_tolerance"] = str(iv)
+                msg = f"Safety установлен: {iv} (1 — строгий, 6 — максимально свободный)."
+            except ValueError:
+                msg = "Safety должен быть числом от 1 до 6. Значение не изменено."
+        elif pending == "image_prompt_strength":
+            try:
+                fv = float(text.replace(",", "."))
+                fv = max(0.0, min(1.0, fv))
+                settings["image_prompt_strength"] = f"{fv:.2f}".rstrip("0").rstrip(".")
+                msg = f"Strength установлен: {settings['image_prompt_strength']}."
+            except ValueError:
+                msg = "Strength должен быть числом от 0 до 1. Значение не изменено."
+        else:
+            msg = "Неизвестный параметр, значение не изменено."
+
+        balance = await get_balance(update.effective_user.id)
+        await update.message.reply_text(
+            msg + "\n\n" + format_settings_text(settings, balance=balance),
+            reply_markup=build_settings_keyboard(settings),
+        )
+        return
+
     # --- обычные reply-кнопки ---
     if text == "🚀 Старт":
         await start(update, context)
@@ -513,13 +549,11 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     data = query.data or ""
 
-    # оплатные «buy_» обрабатываются отдельно
     if data.startswith("buy_"):
         return
 
     await query.answer()
 
-    # возврат в меню
     if data == "back|menu":
         settings = get_user_settings(context)
         balance = await get_balance(query.from_user.id)
@@ -546,12 +580,29 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return
 
+    if action == "input" and len(parts) == 2:
+        param = parts[1]
+        context.user_data[FLUX_INPUT_KEY] = param
+        if param == "seed":
+            text = (
+                "Введите значение seed (целое число) или напишите off, чтобы отключить.\n"
+                "Пример: 42"
+            )
+        elif param == "safety_tolerance":
+            text = "Введите значение safety от 1 до 6 (1 — строгий фильтр, 6 — максимально свободный)."
+        elif param == "image_prompt_strength":
+            text = "Введите strength от 0 до 1 (0.1 — слабое влияние картинки, 1 — сильное)."
+        else:
+            text = "Введите новое значение параметра."
+
+        await query.message.reply_text(text)
+        return
+
     if action == "set" and len(parts) == 3:
         key = parts[1]
         value = parts[2]
 
         settings = get_user_settings(context)
-        # обновляем только известные ключи
         if key in settings:
             settings[key] = value
 
@@ -575,17 +626,12 @@ def register_user_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("model", model_menu_command))
     app.add_handler(CommandHandler("buy", buy_menu_command))
 
-    # inline-кнопки покупки
     app.add_handler(CallbackQueryHandler(buy_callback, pattern=r"^buy_"))
-
-    # настройки
     app.add_handler(CallbackQueryHandler(settings_callback))
 
-    # оплатные хендлеры
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
-    # фото и текст
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_buttons)
