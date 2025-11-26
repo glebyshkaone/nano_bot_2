@@ -1,10 +1,15 @@
-from typing import Dict, Optional, List, Tuple
+import io
 import logging
+from typing import Dict, List, Tuple, Optional
+
 import replicate
 
-from config import MODEL_INFO
+from config import REPLICATE_API_TOKEN, MODEL_INFO
 
 logger = logging.getLogger(__name__)
+
+# Инициализация клиента Replicate
+replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
 
 
 async def run_model(
@@ -13,67 +18,102 @@ async def run_model(
     image_urls: Optional[List[str]] = None,
 ) -> Tuple[str, bytes]:
     """
-    Вызывает модель (banana / banana_pro) через Replicate
-    и возвращает (image_url, image_bytes).
+    Универсальный раннер моделей:
+    - banana (google/nano-banana)
+    - banana_pro (google/nano-banana-pro)
+    - flux_ultra (black-forest-labs/flux-1.1-pro-ultra)
 
-    Для nano-banana / nano-banana-pro Replicate возвращает
-    объект файла с методами .url() и .read().
+    Возвращает (image_url, image_bytes)
     """
-
-    # 1) выбираем модель
     model_key = settings.get("model", "banana")
-    model_info = MODEL_INFO.get(model_key, MODEL_INFO["banana"])
-    model_name = model_info["replicate"]
+    if model_key not in MODEL_INFO:
+        model_key = "banana"
 
-    logger.info("Using model %s for prompt: %s", model_name, prompt)
+    model_cfg = MODEL_INFO[model_key]
+    model_id = model_cfg["replicate"]
 
-    # 2) собираем payload
-    input_payload = {
-        "prompt": prompt,
-        "aspect_ratio": settings["aspect_ratio"],
-        "resolution": settings["resolution"],
-        "output_format": settings["output_format"],
-        "safety_filter_level": settings["safety_filter_level"],
-    }
+    image_urls = image_urls or []
 
-    if image_urls:
-        input_payload["image_input"] = image_urls
+    logger.info("run_model: model=%s, prompt=%s", model_key, prompt[:200])
 
-    # 3) вызов модели
-    output = replicate.run(model_name, input=input_payload)
-    logger.info("Raw output from Replicate: %r (%s)", output, type(output))
+    # -------- BANANA ----------
+    if model_key == "banana":
+        payload = {
+            "prompt": prompt,
+            "image_input": image_urls,
+            "aspect_ratio": settings.get("aspect_ratio", "match_input_image"),
+            "output_format": settings.get("output_format", "jpg"),
+        }
 
-    image_url: Optional[str] = None
-    image_bytes: Optional[bytes] = None
-
-    # Официальный формат nano-banana: объект с .url() и .read()
-    if hasattr(output, "url") and hasattr(output, "read"):
-        url_val = output.url
-        image_url = url_val() if callable(url_val) else url_val
-
-        read_val = output.read
-        image_bytes = read_val() if callable(read_val) else read_val
-
-    elif isinstance(output, list) and output:
-        image_url = output[0]
-        raise RuntimeError(
-            "Модель вернула список URL, а не объект файла. "
-            "Обнови генератор, чтобы скачивать картинку по ссылке."
+        output = replicate_client.run(
+            model_id,
+            input=payload,
         )
 
-    elif isinstance(output, str):
-        image_url = output
-        raise RuntimeError(
-            "Модель вернула строку-URL, а не объект файла. "
-            "Обнови генератор, чтобы скачивать картинку по ссылке."
+        # Новые модели nano-banana возвращают file-like объект
+        image_url = output.url()
+        image_bytes = output.read()
+        return image_url, image_bytes
+
+    # -------- BANANA PRO ----------
+    if model_key == "banana_pro":
+        payload = {
+            "prompt": prompt,
+            "image_input": image_urls,
+            "aspect_ratio": settings.get("aspect_ratio", "match_input_image"),
+            "resolution": settings.get("resolution", "2K"),
+            "output_format": settings.get("output_format", "jpg"),
+            "safety_filter_level": settings.get("safety_filter_level", "block_only_high"),
+        }
+
+        output = replicate_client.run(
+            model_id,
+            input=payload,
         )
 
-    if not image_url or image_bytes is None:
-        raise RuntimeError(f"Не удалось извлечь файл из ответа модели: {output!r}")
+        image_url = output.url()
+        image_bytes = output.read()
+        return image_url, image_bytes
 
-    return image_url, image_bytes
+    # -------- FLUX 1.1 PRO ULTRA ----------
+    if model_key == "flux_ultra":
+        # flux не поддерживает match_input_image, подменяем на 1:1 при необходимости
+        ar = settings.get("aspect_ratio", "1:1")
+        if ar == "match_input_image":
+            ar = "1:1"
 
-    if not image_url or image_bytes is None:
-        raise RuntimeError(f"Не удалось извлечь файл из ответа модели: {output!r}")
+        raw_flag = str(settings.get("raw", "false")).lower() == "true"
+        safety_tol = int(str(settings.get("safety_tolerance", "2")))
+        img_strength = float(str(settings.get("image_prompt_strength", "0.1")))
 
-    return image_url, image_bytes
+        payload = {
+            "prompt": prompt,
+            "aspect_ratio": ar,
+            "output_format": settings.get("output_format", "jpg"),
+            "raw": raw_flag,
+            "safety_tolerance": safety_tol,
+            "image_prompt_strength": img_strength,
+        }
+
+        # image_prompt — одна картинка
+        if image_urls:
+            payload["image_prompt"] = image_urls[0]
+
+        seed_val = str(settings.get("seed", "off"))
+        if seed_val and seed_val != "off":
+            try:
+                payload["seed"] = int(seed_val)
+            except ValueError:
+                pass
+
+        output = replicate_client.run(
+            model_id,
+            input=payload,
+        )
+
+        image_url = output.url()
+        image_bytes = output.read()
+        return image_url, image_bytes
+
+    # fallback (если что-то пошло не так с model_key)
+    raise ValueError(f"Unsupported model: {model_key}")
