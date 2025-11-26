@@ -12,10 +12,18 @@ from core.balance import get_generation_cost_tokens
 
 DEFAULT_SETTINGS = {
     "model": "banana",
+
+    # общие поля / banana / banana_pro
     "aspect_ratio": "match_input_image",
     "output_format": "jpg",
     "resolution": "2K",
     "safety_filter_level": "block_only_high",
+
+    # flux defaults
+    "raw": "false",
+    "seed": "off",
+    "safety_tolerance": "2",
+    "image_prompt_strength": "0.1",
 }
 
 
@@ -50,11 +58,13 @@ def format_settings_text(settings: Dict, balance: Optional[int] = None) -> str:
         lines.append(f"{label}: {value}")
 
     lines.append("\nОтправь текстовый промт — я сгенерирую картинку.")
+    lines.append("Можно отправить фото с подписью — оно станет референсом.")
+
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------
-# DYNAMIC MENU FOR SETTINGS
+# DYNAMIC SETTINGS KEYBOARD
 # ---------------------------------------------------------
 
 def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
@@ -62,7 +72,7 @@ def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
 
     keyboard = []
 
-    # ------------------ MODEL SWITCHER ------------------
+    # ---- переключатель моделей ----
     row_models = []
     for key, info in MODEL_INFO.items():
         prefix = "✅ " if key == model_key else ""
@@ -74,7 +84,7 @@ def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
         )
     keyboard.append(row_models)
 
-    # ------------------ MODEL-SPECIFIC SETTINGS ---------
+    # ---- поля текущей модели ----
     schema = MODEL_SETTINGS_SCHEMA.get(model_key, [])
     for field in schema:
         key = field["key"]
@@ -83,7 +93,7 @@ def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
 
         row = []
         for opt in options:
-            prefix = "✅ " if settings.get(key) == opt else ""
+            prefix = "✅ " if str(settings.get(key)) == str(opt) else ""
             row.append(
                 InlineKeyboardButton(
                     f"{prefix}{opt}",
@@ -96,7 +106,7 @@ def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
         if row:
             keyboard.append(row)
 
-    # ------------------ RESET ---------------------------
+    # ---- reset ----
     keyboard.append(
         [InlineKeyboardButton("🔁 Сбросить", callback_data="reset|settings|default")]
     )
