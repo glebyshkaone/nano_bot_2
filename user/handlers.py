@@ -1,4 +1,5 @@
 from io import BytesIO
+import logging
 
 from telegram import Update
 from telegram.ext import (
@@ -10,13 +11,15 @@ from telegram.ext import (
     filters,
 )
 
-from config import TOKENS_PER_IMAGE
+from config import MODEL_INFO
 from core.registry import register_user, is_admin
-from core.balance import get_balance, deduct_tokens_for_image
+from core.balance import get_balance, deduct_tokens
 from core.settings import get_user_settings, format_settings_text, build_settings_keyboard
 from core.supabase import fetch_generations, log_generation
-from core.generators import run_nano_banana
+from core.generators import run_model
 from .keyboards import build_reply_keyboard
+
+logger = logging.getLogger(__name__)
 
 
 # ---------- Команды ----------
@@ -28,8 +31,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     text = (
         "Привет! Я nano-bot 🤖\n\n"
-        "Отправь мне текстовый промт — я сгенерирую картинку через "
-        "google/nano-banana-pro на Replicate.\n\n"
+        "Отправь мне текстовый промт — я сгенерирую картинку через модели "
+        "google/nano-banana / nano-banana-pro на Replicate.\n\n"
         "Можешь отправить фото с подписью — я использую его как референс (image_input).\n\n"
         "Чтобы пополнить баланс, напиши @glebyshkaone."
     )
@@ -51,12 +54,17 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_user(update.effective_user)
+
+    banana_cost = MODEL_INFO["banana"]["cost"]
+    pro_cost = MODEL_INFO["banana_pro"]["cost"]
+
     text = (
         "Как пользоваться ботом:\n\n"
-        f"• 1 изображение = {TOKENS_PER_IMAGE} токенов.\n"
+        f"• Banana: {banana_cost} токенов за изображение.\n"
+        f"• Banana PRO: {pro_cost} токенов за изображение.\n"
         "• Пополнить баланс можно, написав @glebyshkaone.\n\n"
         "1. Нажми /menu или кнопку «🎛 Меню».\n"
-        "2. Выбери настройки генерации.\n"
+        "2. Выбери модель и настройки генерации.\n"
         "3. Отправь текстовый промт или фото с подписью.\n"
         "4. Если хватает токенов — я сгенерирую картинку.\n\n"
         "Команды:\n"
@@ -71,9 +79,15 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await register_user(update.effective_user)
     user_id = update.effective_user.id
     balance = await get_balance(user_id)
+
+    banana_cost = MODEL_INFO["banana"]["cost"]
+    pro_cost = MODEL_INFO["banana_pro"]["cost"]
+
     await update.message.reply_text(
         f"Ваш баланс: {balance} токенов.\n\n"
-        f"1 изображение = {TOKENS_PER_IMAGE} токенов.\n"
+        f"Тарифы:\n"
+        f"• Banana — {banana_cost} токенов\n"
+        f"• Banana PRO — {pro_cost} токенов\n\n"
         "Чтобы пополнить баланс, напишите @glebyshkaone."
     )
 
@@ -112,21 +126,22 @@ async def generate_with_nano_banana(
 ) -> None:
     await register_user(update.effective_user)
     user_id = update.effective_user.id
+
+    settings = get_user_settings(context)
     balance = await get_balance(user_id)
 
-    if balance < TOKENS_PER_IMAGE:
+    ok, cost, current_or_new = await deduct_tokens(user_id, settings)
+    if not ok:
         await update.message.reply_text(
-            f"Недостаточно токенов: на балансе {balance}, нужно {TOKENS_PER_IMAGE}.\n\n"
+            f"Недостаточно токенов: на балансе {current_or_new}, нужно {cost}.\n\n"
             "Напишите @glebyshkaone, чтобы пополнить баланс."
         )
         return
 
-    settings = get_user_settings(context)
-
     await update.message.reply_text("Генерирую картинку, подожди немного… ⚙️")
 
     try:
-        image_url, img_bytes = await run_nano_banana(prompt, settings, image_urls=image_urls)
+        image_url, img_bytes = await run_model(prompt, settings, image_urls=image_urls)
 
         bio = BytesIO(img_bytes)
         bio.name = f"nano-banana.{settings['output_format']}"
@@ -134,26 +149,21 @@ async def generate_with_nano_banana(
 
         await update.message.reply_photo(photo=bio)
 
-        if await deduct_tokens_for_image(user_id):
-            new_balance = await get_balance(user_id)
-            await update.message.reply_text(
-                f"Списано {TOKENS_PER_IMAGE} токенов. Новый баланс: {new_balance}."
-            )
-            await log_generation(
-                user_id=user_id,
-                prompt=prompt,
-                image_url=image_url,
-                settings=settings,
-                tokens_spent=TOKENS_PER_IMAGE,
-            )
-        else:
-            await update.message.reply_text(
-                "Изображение сгенерировано, но не удалось списать токены — обратитесь к администратору."
-            )
+        new_balance = await get_balance(user_id)
+        await update.message.reply_text(
+            f"Списано {cost} токенов. Новый баланс: {new_balance}."
+        )
+
+        await log_generation(
+            user_id=user_id,
+            prompt=prompt,
+            image_url=image_url,
+            settings=settings,
+            tokens_spent=cost,
+        )
 
     except Exception as e:
-        import logging
-        logging.exception("Ошибка при генерации/отправке")
+        logger.exception("Ошибка при генерации/отправке")
         await update.message.reply_text(
             f"Произошла ошибка при генерации: {e}\n"
             "Если ошибка повторяется — напишите @glebyshkaone."
@@ -249,8 +259,9 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not query:
         return
 
+    # админ-колбэки обрабатываются в admin.handlers
     if (query.data or "").startswith("admin_"):
-        return  # админ-колбэки обрабатываются в admin.handlers
+        return
 
     await query.answer()
     data = query.data or ""
@@ -258,7 +269,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not parts:
         return
 
-    from core.balance import get_balance  # чтобы не было цикличности импортов
+    from core.balance import get_balance  # локальный импорт, чтобы не ловить циклы
 
     action = parts[0]
     if action == "reset":
