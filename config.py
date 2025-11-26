@@ -16,7 +16,6 @@ if ADMIN_IDS_RAW:
     try:
         ADMIN_IDS = [int(x) for x in ADMIN_IDS_RAW.split(",") if x.strip()]
     except ValueError:
-        # Логирование будет настроено позже
         print(f"Failed to parse ADMIN_IDS={ADMIN_IDS_RAW!r}")
 
 if not TELEGRAM_BOT_TOKEN:
@@ -36,11 +35,17 @@ SUPABASE_HEADERS_BASE = {
 }
 
 # ----------------------------------------
-# Биллинг
+# Модели и цены
 # ----------------------------------------
-TOKENS_PER_IMAGE = 150  # стоимость 1 поколения
-
-# ----------------------------------------
-# Logging level (опционально)
-# ----------------------------------------
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+MODEL_INFO = {
+    "banana": {
+        "label": "Banana",
+        "replicate": "google/nano-banana",
+        "cost": 50,
+    },
+    "banana_pro": {
+        "label": "Banana PRO",
+        "replicate": "google/nano-banana-pro",
+        "cost": 150,
+    },
+}
