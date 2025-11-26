@@ -1,24 +1,29 @@
 import os
+from typing import List
 
 # ----------------------------------------
-# Telegram
+# Env
 # ----------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
+ADMIN_IDS: List[int] = []
+if ADMIN_IDS_RAW:
+    try:
+        ADMIN_IDS = [int(x) for x in ADMIN_IDS_RAW.split(",") if x.strip()]
+    except ValueError:
+        # Логирование будет настроено позже
+        print(f"Failed to parse ADMIN_IDS={ADMIN_IDS_RAW!r}")
+
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set")
 
-# ----------------------------------------
-# Replicate
-# ----------------------------------------
-REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 if not REPLICATE_API_TOKEN:
     raise ValueError("REPLICATE_API_TOKEN not set")
-
-# ----------------------------------------
-# Supabase
-# ----------------------------------------
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     raise ValueError("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set")
@@ -31,27 +36,9 @@ SUPABASE_HEADERS_BASE = {
 }
 
 # ----------------------------------------
-# Admins
+# Биллинг
 # ----------------------------------------
-ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
-ADMIN_IDS = []
-
-if ADMIN_IDS_RAW:
-    for part in ADMIN_IDS_RAW.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            ADMIN_IDS.append(int(part))
-        except ValueError:
-            # Просто пропускаем кривой ID
-            continue
-
-# ----------------------------------------
-# Tokens pricing
-# ----------------------------------------
-# Базовая стоимость — можешь менять при желании
-TOKENS_PER_IMAGE = 150
+TOKENS_PER_IMAGE = 150  # стоимость 1 поколения
 
 # ----------------------------------------
 # Logging level (опционально)
