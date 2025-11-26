@@ -3,9 +3,6 @@ from typing import Dict, Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from config import TOKENS_PER_IMAGE  # базовая цена (можно не использовать напрямую)
-from supabase_client.client import get_balance
-
 # Конфиг моделей: ключ -> (название, токены)
 MODEL_CONFIG = {
     "nano": {
@@ -57,7 +54,7 @@ def _get_model_info(settings: Dict) -> Dict:
 
 def format_settings_text(settings: Dict, balance: Optional[int] = None) -> str:
     """
-    Текстовое описание текущих настроек + баланс.
+    Текстовое описание текущих настроек + баланс (если передали).
     """
     model = _get_model_info(settings)
     bal_part = f"Ваш баланс: {balance} токенов\n\n" if balance is not None else ""
@@ -201,10 +198,10 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
         # просто очищаем настройки пользователя
         context.user_data.pop("settings", None)
         settings = get_user_settings(context)
-        balance = await get_balance(query.from_user.id)
+        # баланс тут не тянем, оставляем None
         await query.message.edit_text(
             "Настройки сброшены к стандартным.\n\n"
-            + format_settings_text(settings, balance=balance),
+            + format_settings_text(settings, balance=None),
             reply_markup=build_settings_keyboard(settings),
         )
         return
@@ -220,9 +217,8 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
         if key in DEFAULT_SETTINGS or key == "model_key":
             settings[key] = value
 
-        balance = await get_balance(query.from_user.id)
         await query.message.edit_text(
-            format_settings_text(settings, balance=balance),
+            format_settings_text(settings, balance=None),
             reply_markup=build_settings_keyboard(settings),
         )
         return
