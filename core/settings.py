@@ -3,6 +3,7 @@ from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
 from config import MODEL_INFO
+from core.balance import get_generation_cost_tokens
 
 
 # ----------------------------------------
@@ -11,7 +12,7 @@ from config import MODEL_INFO
 DEFAULT_SETTINGS = {
     "model": "banana",           # default модель
     "aspect_ratio": "4:3",
-    "resolution": "2K",
+    "resolution": "2K",          # 1K / 2K / 4K
     "output_format": "png",
     "safety_filter_level": "block_only_high",
 }
@@ -28,18 +29,35 @@ def format_settings_text(settings: Dict, balance: Optional[int] = None) -> str:
     model_key = settings["model"]
     model = MODEL_INFO[model_key]
 
+    cost_tokens = get_generation_cost_tokens(settings)
+    resolution = settings.get("resolution", "2K")
+
     bal_part = f"Ваш баланс: {balance} токенов\n\n" if balance is not None else ""
 
-    return (
+    text = (
         bal_part
-        + f"Модель: {model['label']} ({model['cost']} токенов за изображение)\n"
+        + f"Модель: {model['label']} ({cost_tokens} токенов за изображение, {resolution})\n"
         f"Соотношение сторон: {settings['aspect_ratio']}\n"
         f"Разрешение: {settings['resolution']}\n"
         f"Формат: {settings['output_format']}\n"
-        f"Фильтр безопасности: {settings['safety_filter_level']}\n\n"
-        "Отправь текстовый промт — я сгенерирую картинку.\n"
+        f"Фильтр безопасности: {settings['safety_filter_level']}\n"
+    )
+
+    # Дополнительная подсказка по стоимости PRO 4K
+    if model_key == "banana_pro":
+        base_cost = model["base_cost"]
+        pro_4k_cost = base_cost * 2
+        if resolution != "4K":
+            text += f"\nПри 4K разрешении стоимость будет {pro_4k_cost} токенов."
+        else:
+            text += f"\n(Для 1K/2K стоимость будет {base_cost} токенов.)"
+
+    text += (
+        "\n\nОтправь текстовый промт — я сгенерирую картинку.\n"
         "Можешь отправить фото с подписью — оно будет использовано как референс."
     )
+
+    return text
 
 
 def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
@@ -49,6 +67,10 @@ def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
     fmt = settings["output_format"]
     safety = settings["safety_filter_level"]
 
+    banana_cost = MODEL_INFO["banana"]["base_cost"]
+    pro_base = MODEL_INFO["banana_pro"]["base_cost"]
+    pro_4k = pro_base * 2
+
     def mark(current: str, value: str, label: str) -> str:
         return f"✅ {label}" if current == value else label
 
@@ -57,11 +79,11 @@ def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
         # МОДЕЛИ
         [
             InlineKeyboardButton(
-                mark(model, "banana", "🍌 Banana (50)"),
+                mark(model, "banana", f"🍌 Banana ({banana_cost})"),
                 callback_data="set|model|banana",
             ),
             InlineKeyboardButton(
-                mark(model, "banana_pro", "💎 Banana PRO (150)"),
+                mark(model, "banana_pro", f"💎 Banana PRO ({pro_base}/{pro_4k})"),
                 callback_data="set|model|banana_pro",
             ),
         ],
