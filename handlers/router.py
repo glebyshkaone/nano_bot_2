@@ -1,87 +1,71 @@
-# handlers/router.py
-
+import logging
 from telegram.ext import (
-    Application,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
     filters,
 )
 
-# --- user handlers ---
-from handlers.user_handlers import (
-    cmd_start,
-    cmd_menu,
-    cmd_help,
-    cmd_balance,
-    cmd_history,
-    handle_text_message,
+# Импортируем наши хендлеры
+from handlers.text_handlers import (
+    start_command,
+    menu_command,
+    help_command,
+    balance_command,
+    history_command,
+    handle_reply_buttons,
 )
 
-# --- photo handler ---
 from handlers.photo_handlers import handle_photo
 
-# --- admin handlers ---
-from handlers.admin_handlers import (
-    cmd_admin,
+from admin_panel.panel import (
+    admin_command,
+    admin_help_command,
     admin_callback,
-    handle_admin_search,
 )
 
-# --- settings handlers ---
-from handlers.settings_handlers import handle_settings_callback
+from generation.settings import handle_settings_callback
 
 
-def setup_handlers(app: Application) -> None:
-    """
-    Подключает все команды, message-хендлеры и обработку callback'ов.
-    Вызывается из bot.py после создания Application.
-    """
+logger = logging.getLogger(__name__)
 
-    # ------------------------
-    # USER COMMANDS
-    # ------------------------
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("menu", cmd_menu))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("balance", cmd_balance))
-    app.add_handler(CommandHandler("history", cmd_history))
 
-    # ------------------------
-    # ADMIN COMMAND
-    # ------------------------
-    app.add_handler(CommandHandler("admin", cmd_admin))
+def register_handlers(app):
+    """Регистрирует все хендлеры в приложении Telegram Bot."""
 
-    # ------------------------
-    # CALLBACKS
-    # ВАЖНО: админские callback'и обрабатываем ПЕРВЫМИ
-    # ------------------------
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
+    logger.info("Registering handlers...")
 
-    # callback'и настроек генерации
-    app.add_handler(CallbackQueryHandler(handle_settings_callback, pattern="^(set|reset)\|"))
+    # Команды пользователя
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("menu", menu_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("balance", balance_command))
+    app.add_handler(CommandHandler("history", history_command))
 
-    # ------------------------
-    # PHOTO HANDLER (референсы)
-    # ------------------------
+    # Команды админа
+    app.add_handler(CommandHandler("admin", admin_command))
+    app.add_handler(CommandHandler("admin_help", admin_help_command))
+
+    # CallbackQuery — админка
+    app.add_handler(CallbackQueryHandler(admin_callback, pattern=r"^admin_"))
+
+    # CallbackQuery — настройки генерации
+    app.add_handler(
+        CallbackQueryHandler(
+            handle_settings_callback,
+            pattern=r"^(set|reset)\|"
+        )
+    )
+
+    # Фото → в генерацию
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    # ------------------------
-    # ADMIN SEARCH MODE (текст)
-    # ------------------------
+    # Любой текст → обработка кнопок/поиск/промт
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            handle_admin_search
+            handle_reply_buttons
         )
     )
 
-    # ------------------------
-    # GENERAL TEXT HANDLER (промты + кнопки)
-    # ------------------------
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handle_text_message
-        )
-    )
+    logger.info("Handlers registered successfully")
