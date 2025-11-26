@@ -6,17 +6,47 @@ from config import MODEL_INFO
 from core.balance import get_generation_cost_tokens
 
 
-# ----------------------------------------
-# Настройки по умолчанию
-# ----------------------------------------
+# ----------------------------------------------------
+# НАСТРОЙКИ ПО УМОЛЧАНИЮ
+# ----------------------------------------------------
+
 DEFAULT_SETTINGS = {
-    "model": "banana",           # default модель
-    "aspect_ratio": "4:3",
-    "resolution": "2K",          # 1K / 2K / 4K
-    "output_format": "png",
+    "model": "banana",
+    "aspect_ratio": "match_input_image",
+    "output_format": "jpg",
+    "resolution": "2K",
     "safety_filter_level": "block_only_high",
 }
 
+
+# ----------------------------------------------------
+# СПЕЦИФИКАЦИИ МЕНЮ ДЛЯ МОДЕЛЕЙ
+# ----------------------------------------------------
+
+BANANA_SETTINGS = {
+    "aspect_ratio": [
+        "match_input_image","1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"
+    ],
+    "output_format": ["jpg", "png"],
+}
+
+BANANA_PRO_SETTINGS = {
+    "resolution": ["1K", "2K", "4K"],
+    "aspect_ratio": [
+        "match_input_image","1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"
+    ],
+    "output_format": ["jpg", "png"],
+    "safety_filter_level": [
+        "block_low_and_above",
+        "block_medium_and_above",
+        "block_only_high"
+    ],
+}
+
+
+# ----------------------------------------------------
+# ЛОГИКА ПОЛУЧЕНИЯ / ОБНОВЛЕНИЯ НАСТРОЕК
+# ----------------------------------------------------
 
 def get_user_settings(context: ContextTypes.DEFAULT_TYPE) -> Dict:
     data = context.user_data
@@ -25,142 +55,128 @@ def get_user_settings(context: ContextTypes.DEFAULT_TYPE) -> Dict:
     return data
 
 
+# ----------------------------------------------------
+# ОПИСАНИЕ ТЕКУЩИХ НАСТРОЕК (текст)
+# ----------------------------------------------------
+
 def format_settings_text(settings: Dict, balance: Optional[int] = None) -> str:
-    model_key = settings["model"]
-    model = MODEL_INFO[model_key]
+    model = settings["model"]
+    cost = get_generation_cost_tokens(settings)
+    res = settings.get("resolution")
 
-    cost_tokens = get_generation_cost_tokens(settings)
-    resolution = settings.get("resolution", "2K")
+    bal = f"Ваш баланс: {balance} токенов\n\n" if balance is not None else ""
 
-    bal_part = f"Ваш баланс: {balance} токенов\n\n" if balance is not None else ""
+    txt = f"{bal}"
+    txt += f"Модель: {MODEL_INFO[model]['label']} ({cost} токенов)\n"
 
-    text = (
-        bal_part
-        + f"Модель: {model['label']} ({cost_tokens} токенов за изображение, {resolution})\n"
-        f"Соотношение сторон: {settings['aspect_ratio']}\n"
-        f"Разрешение: {settings['resolution']}\n"
-        f"Формат: {settings['output_format']}\n"
-        f"Фильтр безопасности: {settings['safety_filter_level']}\n"
-    )
+    if model == "banana_pro":
+        txt += f"Разрешение: {settings['resolution']}\n"
 
-    # Дополнительная подсказка по стоимости PRO 4K
-    if model_key == "banana_pro":
-        base_cost = model["base_cost"]
-        pro_4k_cost = base_cost * 2
-        if resolution != "4K":
-            text += f"\nПри 4K разрешении стоимость будет {pro_4k_cost} токенов."
-        else:
-            text += f"\n(Для 1K/2K стоимость будет {base_cost} токенов.)"
+    txt += f"Аспект: {settings['aspect_ratio']}\n"
+    txt += f"Формат: {settings['output_format']}\n"
 
-    text += (
-        "\n\nОтправь текстовый промт — я сгенерирую картинку.\n"
-        "Можешь отправить фото с подписью — оно будет использовано как референс."
-    )
+    if model == "banana_pro":
+        txt += f"Фильтр: {settings['safety_filter_level']}\n"
 
-    return text
+    txt += "\nОтправь промт — я сгенерирую картинку."
 
+    return txt
+
+
+# ----------------------------------------------------
+# ДИНАМИЧЕСКОЕ МЕНЮ НАСТРОЕК
+# ----------------------------------------------------
 
 def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
     model = settings["model"]
-    ar = settings["aspect_ratio"]
-    res = settings["resolution"]
-    fmt = settings["output_format"]
-    safety = settings["safety_filter_level"]
 
-    banana_cost = MODEL_INFO["banana"]["base_cost"]
-    pro_base = MODEL_INFO["banana_pro"]["base_cost"]
-    pro_4k = pro_base * 2
+    keyboard = []
 
-    def mark(current: str, value: str, label: str) -> str:
-        return f"✅ {label}" if current == value else label
+    # ————— Выбор модели
+    keyboard.append([
+        InlineKeyboardButton(
+            ("✅ " if model == "banana" else "") + "🍌 Banana",
+            callback_data="set|model|banana"
+        ),
+        InlineKeyboardButton(
+            ("✅ " if model == "banana_pro" else "") + "💎 Banana PRO",
+            callback_data="set|model|banana_pro"
+        ),
+    ])
 
-    keyboard = [
-
-        # МОДЕЛИ
-        [
-            InlineKeyboardButton(
-                mark(model, "banana", f"🍌 Banana ({banana_cost})"),
-                callback_data="set|model|banana",
-            ),
-            InlineKeyboardButton(
-                mark(model, "banana_pro", f"💎 Banana PRO ({pro_base}/{pro_4k})"),
-                callback_data="set|model|banana_pro",
-            ),
-        ],
-
-        # АСПЕКТ РАЦИО
-        [
-            InlineKeyboardButton(
-                mark(ar, "1:1", "1:1"),
-                callback_data="set|aspect_ratio|1:1"
-            ),
-            InlineKeyboardButton(
-                mark(ar, "4:3", "4:3"),
-                callback_data="set|aspect_ratio|4:3"
-            ),
-            InlineKeyboardButton(
-                mark(ar, "16:9", "16:9"),
-                callback_data="set|aspect_ratio|16:9"
-            ),
-            InlineKeyboardButton(
-                mark(ar, "9:16", "9:16"),
-                callback_data="set|aspect_ratio|9:16"
-            ),
-        ],
-
-        # РАЗРЕШЕНИЕ
-        [
-            InlineKeyboardButton(
-                mark(res, "1K", "1K"),
-                callback_data="set|resolution|1K"
-            ),
-            InlineKeyboardButton(
-                mark(res, "2K", "2K"),
-                callback_data="set|resolution|2K"
-            ),
-            InlineKeyboardButton(
-                mark(res, "4K", "4K"),
-                callback_data="set|resolution|4K"
-            ),
-        ],
-
-        # ФОРМАТ
-        [
-            InlineKeyboardButton(
-                mark(fmt, "png", "png"),
-                callback_data="set|output_format|png"
-            ),
-            InlineKeyboardButton(
-                mark(fmt, "jpg", "jpg"),
-                callback_data="set|output_format|jpg"
-            ),
-        ],
-
-        # SAFE FILTER
-        [
-            InlineKeyboardButton(
-                mark(safety, "block_only_high", "safe-high"),
-                callback_data="set|safety_filter_level|block_only_high"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                mark(safety, "block_medium_and_above", "medium+"),
-                callback_data="set|safety_filter_level|block_medium_and_above"
-            ),
-            InlineKeyboardButton(
-                mark(safety, "block_low_and_above", "low+"),
-                callback_data="set|safety_filter_level|block_low_and_above"
-            ),
-        ],
-
-        # RESET
-        [
-            InlineKeyboardButton(
-                "🔁 Сбросить к стандартным",
-                callback_data="reset|settings|default"
+    # ————— Параметры nano-banana
+    if model == "banana":
+        # aspect ratio
+        row = []
+        for ar in BANANA_SETTINGS["aspect_ratio"]:
+            row.append(
+                InlineKeyboardButton(
+                    ("✅ " if settings["aspect_ratio"] == ar else "") + ar,
+                    callback_data=f"set|aspect_ratio|{ar}"
+                )
             )
-        ],
-    ]
+            if len(row) == 3:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+
+        # output_format
+        keyboard.append([
+            InlineKeyboardButton(
+                ("✅ " if settings["output_format"] == fmt else "") + fmt,
+                callback_data=f"set|output_format|{fmt}"
+            )
+            for fmt in BANANA_SETTINGS["output_format"]
+        ])
+
+    # ————— Параметры nano-banana-pro
+    if model == "banana_pro":
+
+        # resolution
+        keyboard.append([
+            InlineKeyboardButton(
+                ("✅ " if settings["resolution"] == r else "") + r,
+                callback_data=f"set|resolution|{r}"
+            ) for r in BANANA_PRO_SETTINGS["resolution"]
+        ])
+
+        # aspect ratio
+        row = []
+        for ar in BANANA_PRO_SETTINGS["aspect_ratio"]:
+            row.append(
+                InlineKeyboardButton(
+                    ("✅ " if settings["aspect_ratio"] == ar else "") + ar,
+                    callback_data=f"set|aspect_ratio|{ar}"
+                )
+            )
+            if len(row) == 3:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+
+        # output_format
+        keyboard.append([
+            InlineKeyboardButton(
+                ("✅ " if settings["output_format"] == fmt else "") + fmt,
+                callback_data=f"set|output_format|{fmt}"
+            )
+            for fmt in BANANA_PRO_SETTINGS["output_format"]
+        ])
+
+        # safety
+        keyboard.append([
+            InlineKeyboardButton(
+                ("✅ " if settings["safety_filter_level"] == fl else "") + fl,
+                callback_data=f"set|safety_filter_level|{fl}"
+            )
+            for fl in BANANA_PRO_SETTINGS["safety_filter_level"]
+        ])
+
+    # ————— Reset
+    keyboard.append([
+        InlineKeyboardButton("🔁 Сбросить", callback_data="reset|settings|default")
+    ])
 
     return InlineKeyboardMarkup(keyboard)
