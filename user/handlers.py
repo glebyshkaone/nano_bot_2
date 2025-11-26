@@ -28,12 +28,13 @@ from core.balance import (
 from core.settings import get_user_settings, format_settings_text, build_settings_keyboard
 from core.supabase import fetch_generations, log_generation
 from core.generators import run_model
+from core.api_tokens import create_api_token_for_user
 from .keyboards import build_reply_keyboard
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------
-# CONSTANTS FOR PAYMENTS
+# CONSTANTS
 # ---------------------------------------------------------
 
 STARS_PER_150_TOKENS = 25
@@ -41,6 +42,7 @@ PAYLOAD_PREFIX = "buy_tokens:"
 TOKEN_PACKS = [500, 1000, 1500]
 CUSTOM_TOKENS_KEY = "awaiting_custom_tokens"
 FLUX_INPUT_KEY = "awaiting_flux_input"  # seed / safety / strength
+API_BASE_URL_FOR_PS = "https://nanobot.glebmishin72.workers.dev"
 
 
 def tokens_to_stars(tokens: int) -> int:
@@ -61,7 +63,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Привет! Я nano-bot 🤖\n\n"
         "Отправь текстовый промт — я сгенерирую картинку.\n"
         "Можно отправить фото с подписью — изображение станет референсом.\n\n"
-        "Пополнить токены через Telegram Stars: /buy"
+        "Пополнить токены через Telegram Stars: /buy\n"
+        "Получить токен для Photoshop-плагина: /ps_token"
     )
 
     await update.message.reply_text(text, reply_markup=build_reply_keyboard())
@@ -91,7 +94,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         lines.append(f"• {emoji} {info['label']} — {pricing}")
 
     lines.append(
-        "\nПополнение токенов через Telegram Stars: /buy\n\n"
+        "\nПополнение токенов через Telegram Stars: /buy\n"
+        "Токен для Photoshop-плагина: /ps_token\n\n"
         "Команды:\n"
         "/menu — настройки генерации\n"
         "/model — выбор модели\n"
@@ -147,6 +151,24 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         lines.append("")
 
     await update.message.reply_text("\n".join(lines))
+
+
+async def ps_token_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Выдаём токен для Photoshop-плагина."""
+    await register_user(update.effective_user)
+    user_id = update.effective_user.id
+
+    token = await create_api_token_for_user(user_id)
+
+    text = (
+        "🔑 Токен для Photoshop-плагина Nano Bot:\n\n"
+        f"`{token}`\n\n"
+        "1. Скопируйте этот токен и вставьте его в настройках плагина в поле *NanoBot Token*.\n"
+        f"2. В поле *API Base URL* укажите:\n`{API_BASE_URL_FOR_PS}`\n\n"
+        "Храните токен как пароль — по нему считается ваш баланс токенов."
+    )
+
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 # ---------------------------------------------------------
@@ -625,6 +647,7 @@ def register_user_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("history", history_command))
     app.add_handler(CommandHandler("model", model_menu_command))
     app.add_handler(CommandHandler("buy", buy_menu_command))
+    app.add_handler(CommandHandler("ps_token", ps_token_command))
 
     app.add_handler(CallbackQueryHandler(buy_callback, pattern=r"^buy_"))
     app.add_handler(CallbackQueryHandler(settings_callback))
