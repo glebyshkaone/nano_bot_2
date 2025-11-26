@@ -1,10 +1,11 @@
 import logging
-from typing import Optional
+from typing import Tuple
 
-from config import TOKENS_PER_IMAGE
+from config import MODEL_INFO
 from .supabase import supabase_get_user, supabase_update_user
 
 logger = logging.getLogger(__name__)
+
 
 async def get_balance(user_id: int) -> int:
     try:
@@ -39,10 +40,19 @@ async def subtract_tokens(user_id: int, amount: int) -> int:
     return new_balance
 
 
-async def deduct_tokens_for_image(user_id: int) -> bool:
+async def deduct_tokens(user_id: int, settings: dict) -> Tuple[bool, int, int]:
+    """
+    Списывает токены по выбранной модели.
+    Возвращает (успех, стоимость, новый баланс или текущий, если не хватило).
+    """
+    model_key = settings.get("model", "banana")
+    model_info = MODEL_INFO.get(model_key, MODEL_INFO["banana"])
+    cost = model_info["cost"]
+
     current = await get_balance(user_id)
-    if current < TOKENS_PER_IMAGE:
-        return False
-    new_balance = current - TOKENS_PER_IMAGE
+    if current < cost:
+        return False, cost, current
+
+    new_balance = current - cost
     await set_balance(user_id, new_balance)
-    return True
+    return True, cost, new_balance
