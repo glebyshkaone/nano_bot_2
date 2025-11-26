@@ -1,7 +1,7 @@
 from io import BytesIO
 import logging
 
-from telegram import Update
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ContextTypes,
     CommandHandler,
@@ -63,13 +63,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"• Banana: {banana_cost} токенов за изображение.\n"
         f"• Banana PRO: {pro_cost} токенов за изображение.\n"
         "• Пополнить баланс можно, написав @glebyshkaone.\n\n"
-        "1. Нажми /menu или кнопку «🎛 Меню».\n"
-        "2. Выбери модель и настройки генерации.\n"
+        "1. Нажми /menu или «🎛 Меню» — там все настройки.\n"
+        "2. Для быстрого выбора модели есть кнопка «🧠 Модель» или команда /model.\n"
         "3. Отправь текстовый промт или фото с подписью.\n"
         "4. Если хватает токенов — я сгенерирую картинку.\n\n"
         "Команды:\n"
         "/balance — посмотреть баланс\n"
         "/history — последние генерации\n"
+        "/model — выбор модели\n"
         "/admin — админ-панель (для админов)"
     )
     await update.message.reply_text(text)
@@ -117,6 +118,48 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text("\n".join(lines))
 
 
+# ---------- Отдельное меню выбора модели ----------
+async def model_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отдельное компактное меню только для выбора модели."""
+    await register_user(update.effective_user)
+    settings = get_user_settings(context)
+    current_model = settings["model"]
+
+    banana_cost = MODEL_INFO["banana"]["cost"]
+    pro_cost = MODEL_INFO["banana_pro"]["cost"]
+
+    text = (
+        "🧠 Выбор модели генерации\n\n"
+        f"Текущая модель: *{MODEL_INFO[current_model]['label']}*\n\n"
+        f"• 🍌 Banana — {banana_cost} токенов\n"
+        f"• 💎 Banana PRO — {pro_cost} токенов\n\n"
+        "Выбери модель ниже:"
+    )
+
+    kb = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    ("✅ " if current_model == "banana" else "") + "🍌 Banana (50)",
+                    callback_data="set|model|banana",
+                ),
+                InlineKeyboardButton(
+                    ("✅ " if current_model == "banana_pro" else "") + "💎 Banana PRO (150)",
+                    callback_data="set|model|banana_pro",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "⬅ Вернуться в меню",
+                    callback_data="back|menu",
+                )
+            ],
+        ]
+    )
+
+    await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
 # ---------- Генерация ----------
 async def generate_with_nano_banana(
     update: Update,
@@ -128,6 +171,7 @@ async def generate_with_nano_banana(
     user_id = update.effective_user.id
 
     settings = get_user_settings(context)
+    # баланс берём для инфы, списание идёт через deduct_tokens
     balance = await get_balance(user_id)
 
     ok, cost, current_or_new = await deduct_tokens(user_id, settings)
@@ -239,6 +283,9 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
     if text == "🎛 Меню":
         await menu_command(update, context)
         return
+    if text == "🧠 Модель":
+        await model_menu_command(update, context)
+        return
     if text == "ℹ Помощь":
         await help_command(update, context)
         return
@@ -259,17 +306,27 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not query:
         return
 
+    data = query.data or ""
+
     # админ-колбэки обрабатываются в admin.handlers
-    if (query.data or "").startswith("admin_"):
+    if data.startswith("admin_"):
         return
 
     await query.answer()
-    data = query.data or ""
+
+    # спец-кейс: кнопка "⬅ Вернуться в меню" из модельного меню
+    if data == "back|menu":
+        settings = get_user_settings(context)
+        balance = await get_balance(query.from_user.id)
+        await query.message.edit_text(
+            format_settings_text(settings, balance=balance),
+            reply_markup=build_settings_keyboard(settings),
+        )
+        return
+
     parts = data.split("|")
     if not parts:
         return
-
-    from core.balance import get_balance  # локальный импорт, чтобы не ловить циклы
 
     action = parts[0]
     if action == "reset":
@@ -290,8 +347,15 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if key in settings:
             settings[key] = value
         balance = await get_balance(query.from_user.id)
+
+        # если меняли модель — даём подсказку выбрать настройки
+        if key == "model":
+            header = "Модель обновлена. Теперь выбери настройки для неё:\n\n"
+        else:
+            header = ""
+
         await query.message.edit_text(
-            format_settings_text(settings, balance=balance),
+            header + format_settings_text(settings, balance=balance),
             reply_markup=build_settings_keyboard(settings),
         )
 
@@ -303,6 +367,7 @@ def register_user_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("balance", balance_command))
     app.add_handler(CommandHandler("history", history_command))
+    app.add_handler(CommandHandler("model", model_menu_command))
 
     # Callback настроек генерации (после admin_callback в main.py)
     app.add_handler(CallbackQueryHandler(settings_callback))
