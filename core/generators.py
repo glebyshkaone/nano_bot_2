@@ -55,7 +55,6 @@ async def run_model(
         image_bytes = read_val() if callable(read_val) else read_val
 
     elif isinstance(output, list) and output:
-        # fallback — если вдруг вернёт список URL
         image_url = output[0]
         raise RuntimeError(
             "Модель вернула список URL, а не объект файла. "
@@ -68,6 +67,11 @@ async def run_model(
             "Модель вернула строку-URL, а не объект файла. "
             "Обнови генератор, чтобы скачивать картинку по ссылке."
         )
+
+    if not image_url or image_bytes is None:
+        raise RuntimeError(f"Не удалось извлечь файл из ответа модели: {output!r}")
+
+    return image_url, image_bytes
 
     if not image_url or image_bytes is None:
         raise RuntimeError(f"Не удалось извлечь файл из ответа модели: {output!r}")
