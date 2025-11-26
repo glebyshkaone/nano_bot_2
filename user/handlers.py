@@ -161,7 +161,7 @@ async def model_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lines = ["🧠 Выбор модели генерации:\n"]
     for key, info in MODEL_INFO.items():
         emoji = info.get("emoji", "🧠")
-        pricing = info.get("pricing_text", f"{info['base_cost']} токенов")
+        pricing = info.get("pricing_text", f"{info['base_cost']} tokенов")
         prefix = "✅ " if key == current_model else ""
         lines.append(f"{prefix}{emoji} {info['label']} — {pricing}")
     lines.append("")
@@ -241,7 +241,7 @@ async def generate_with_nano_banana(
 
         # 4. Отправляем изображение
         bio = BytesIO(img_bytes)
-        bio.name = f"nano-banana.{settings.get('output_format', 'png')}"
+        bio.name = f"nano-bot.{settings.get('output_format', 'png')}"
         bio.seek(0)
 
         await update.message.reply_photo(photo=bio)
@@ -342,7 +342,6 @@ async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     await query.answer()
     data = query.data or ""
-
     chat_id = query.message.chat_id
 
     # Готовые паки
