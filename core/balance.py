@@ -29,7 +29,7 @@ async def set_balance(user_id: int, val: int) -> None:
 
 
 async def add_tokens(user_id: int, amount: int) -> int:
-    """Плюсовать токены к балансу (используется покупками / админкой)."""
+    """Плюсовать токены к балансу (покупки / админка)."""
     current = await get_balance(user_id)
     new_balance = max(0, current + amount)
     await set_balance(user_id, new_balance)
@@ -38,8 +38,7 @@ async def add_tokens(user_id: int, amount: int) -> int:
 
 async def subtract_tokens(user_id: int, amount: int) -> int:
     """
-    Старая функция, которую использует admin.handlers.
-    Просто вычитает фиксированное количество токенов из баланса.
+    Старая функция для админки: просто вычитает фиксированное число токенов.
     """
     if amount <= 0:
         return await get_balance(user_id)
@@ -57,10 +56,8 @@ async def subtract_tokens(user_id: int, amount: int) -> int:
 def get_generation_cost_tokens(settings: dict) -> int:
     """
     Стоимость генерации в токенах по текущим настройкам.
-    Общая логика:
-    - base_cost задаётся в MODEL_INFO
-    - для banana_pro + resolution=4K цена = base_cost * 2
-    - остальные модели пока используют base_cost как есть
+    - Banana / Flux: base_cost из MODEL_INFO
+    - Banana PRO 4K: base_cost * 2
     """
     model_key = settings.get("model", "banana")
     model_info = MODEL_INFO.get(model_key, MODEL_INFO["banana"])
