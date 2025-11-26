@@ -56,3 +56,4 @@ async def deduct_tokens(user_id: int, settings: dict) -> Tuple[bool, int, int]:
     new_balance = current - cost
     await set_balance(user_id, new_balance)
     return True, cost, new_balance
+    
