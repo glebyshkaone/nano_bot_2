@@ -18,7 +18,7 @@ from telegram.ext import (
 )
 
 from config import MODEL_INFO
-from core.registry import register_user, is_admin
+from core.registry import register_user
 from core.balance import (
     get_balance,
     deduct_tokens,
@@ -32,7 +32,9 @@ from .keyboards import build_reply_keyboard
 
 logger = logging.getLogger(__name__)
 
-# ---------- Константы для оплаты ----------
+# ---------------------------------------------------------
+# CONSTANTS FOR PAYMENTS
+# ---------------------------------------------------------
 
 # 150 токенов = 25 звёзд
 STARS_PER_150_TOKENS = 25
@@ -46,7 +48,9 @@ def tokens_to_stars(tokens: int) -> int:
     return max(1, stars)
 
 
-# ---------- Команды ----------
+# ---------------------------------------------------------
+# BASIC COMMANDS
+# ---------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_user(update.effective_user)
@@ -56,12 +60,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "Привет! Я nano-bot 🤖\n\n"
         "Отправь текстовый промт — я сгенерирую картинку.\n"
-        "Можешь отправить фото с подписью — оно станет референсом.\n\n"
-        "Пополнить токены (Telegram Stars): /buy"
+        "Можно отправить фото с подписью — изображение станет референсом.\n\n"
+        "Пополнить токены через Telegram Stars: /buy"
     )
 
     await update.message.reply_text(text, reply_markup=build_reply_keyboard())
-    await update.message.reply_text(format_settings_text(settings, balance=balance))
+    await update.message.reply_text(
+        format_settings_text(settings, balance=balance),
+        reply_markup=build_settings_keyboard(settings),
+    )
 
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -74,105 +81,122 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    banana_cost = MODEL_INFO["banana"]["base_cost"]
-    pro_base = MODEL_INFO["banana_pro"]["base_cost"]
-    pro_4k = pro_base * 2
+    await register_user(update.effective_user)
 
-    text = (
-        "Как пользоваться ботом:\n\n"
-        f"• Banana — {banana_cost} токенов\n"
-        f"• Banana PRO — {pro_base} токенов (1K/2K) / {pro_4k} токенов (4K)\n\n"
-        "Пополнение токенов через Telegram Stars: /buy\n\n"
+    lines = ["Как пользоваться ботом:\n"]
+
+    for key, info in MODEL_INFO.items():
+        emoji = info.get("emoji", "🧠")
+        pricing = info.get("pricing_text", f"{info['base_cost']} токенов")
+        lines.append(f"• {emoji} {info['label']} — {pricing}")
+
+    lines.append(
+        "\nПополнение токенов через Telegram Stars: /buy\n\n"
         "Команды:\n"
-        "/menu — настройки\n"
-        "/model — смена модели\n"
+        "/menu — настройки генерации\n"
+        "/model — выбор модели\n"
         "/balance — баланс токенов\n"
-        "/history — история генераций\n"
+        "/history — последние генерации\n"
     )
-    await update.message.reply_text(text)
+
+    await update.message.reply_text("\n".join(lines))
 
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    balance = await get_balance(update.effective_user.id)
-    banana_cost = MODEL_INFO["banana"]["base_cost"]
-    pro_base = MODEL_INFO["banana_pro"]["base_cost"]
-    pro_4k = pro_base * 2
+    await register_user(update.effective_user)
+    user_id = update.effective_user.id
+    balance = await get_balance(user_id)
 
-    lines = [
-        f"Ваш баланс: {balance} токенов.\n",
-        "Стоимость генерации:",
-        f"• Banana — {banana_cost}",
-        f"• Banana PRO — {pro_base} (1K/2K), {pro_4k} (4K)",
-        "",
-        "Пополнение (/buy):",
-    ]
+    lines = [f"Ваш баланс: {balance} токенов.\n", "Тарифы генерации:"]
+
+    for key, info in MODEL_INFO.items():
+        emoji = info.get("emoji", "🧠")
+        pricing = info.get("pricing_text", f"{info['base_cost']} токенов")
+        lines.append(f"• {emoji} {info['label']} — {pricing}")
+
+    lines.append("")
+    lines.append("Пополнение через Telegram Stars (/buy):")
     for t in TOKEN_PACKS:
-        lines.append(f"• {t} токенов — {tokens_to_stars(t)}⭐")
-
-    lines.append("• Другое количество — вручную.")
+        stars = tokens_to_stars(t)
+        lines.append(f"• {t} токенов — {stars}⭐")
+    lines.append("• Другое количество — также считается по этому курсу.")
 
     await update.message.reply_text("\n".join(lines))
 
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await register_user(update.effective_user)
     user_id = update.effective_user.id
     gens = await fetch_generations(user_id, limit=5)
 
     if not gens:
-        await update.message.reply_text("История пустая.")
+        await update.message.reply_text("Пока нет сохранённой истории генераций.")
         return
 
-    lines = ["Последние генерации:\n"]
+    lines = ["Ваши последние генерации (до 5):", ""]
     for g in gens:
-        prompt = g.get("prompt", "")
-        short = prompt[:80] + ("…" if len(prompt) > 80 else "")
-        lines.append(f"• {short}")
-        lines.append(f"  {g.get('tokens_spent')} токенов | {g.get('created_at')}")
-        url = g.get("image_url")
-        if url:
-            lines.append(url)
+        prompt = g.get("prompt") or ""
+        ts = g.get("created_at") or ""
+        tokens_spent = g.get("tokens_spent") or 0
+        image_url = g.get("image_url") or ""
+        short_prompt = (prompt[:80] + "…") if len(prompt) > 80 else prompt
+        lines.append(f"• {short_prompt}")
+        lines.append(f"  Токенов: {tokens_spent} | Время: {ts}")
+        if image_url:
+            lines.append(f"  {image_url}")
         lines.append("")
 
     await update.message.reply_text("\n".join(lines))
 
 
-# ---------- Выбор модели ----------
+# ---------------------------------------------------------
+# MODEL MENU
+# ---------------------------------------------------------
 
 async def model_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await register_user(update.effective_user)
     settings = get_user_settings(context)
-    current = settings["model"]
+    current_model = settings["model"]
 
-    banana_cost = MODEL_INFO["banana"]["base_cost"]
-    pro_base = MODEL_INFO["banana_pro"]["base_cost"]
-    pro_4k = pro_base * 2
+    lines = ["🧠 Выбор модели генерации:\n"]
+    for key, info in MODEL_INFO.items():
+        emoji = info.get("emoji", "🧠")
+        pricing = info.get("pricing_text", f"{info['base_cost']} токенов")
+        prefix = "✅ " if key == current_model else ""
+        lines.append(f"{prefix}{emoji} {info['label']} — {pricing}")
+    lines.append("")
+    lines.append("Нажми кнопку ниже, чтобы сменить модель.")
 
-    text = (
-        "🧠 Выбор модели:\n\n"
-        f"• Banana — {banana_cost} токенов\n"
-        f"• Banana PRO — {pro_base} / {pro_4k} (4K)\n\n"
-        f"Текущая: {MODEL_INFO[current]['label']}"
+    buttons_rows = []
+    row = []
+    for key, info in MODEL_INFO.items():
+        emoji = info.get("emoji", "🧠")
+        prefix = "✅ " if key == current_model else ""
+        row.append(
+            InlineKeyboardButton(
+                f"{prefix}{emoji} {info['label']}",
+                callback_data=f"set|model|{key}",
+            )
+        )
+        if len(row) == 2:
+            buttons_rows.append(row)
+            row = []
+    if row:
+        buttons_rows.append(row)
+
+    buttons_rows.append(
+        [InlineKeyboardButton("⬅ Вернуться в меню", callback_data="back|menu")]
     )
 
-    kb = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    ("✅ " if current == "banana" else "") + "🍌 Banana",
-                    callback_data="set|model|banana",
-                ),
-                InlineKeyboardButton(
-                    ("✅ " if current == "banana_pro" else "") + "💎 Banana PRO",
-                    callback_data="set|model|banana_pro",
-                ),
-            ],
-            [InlineKeyboardButton("⬅ Назад", callback_data="back|menu")],
-        ]
+    await update.message.reply_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(buttons_rows),
     )
 
-    await update.message.reply_text(text, reply_markup=kb)
 
-
-# ---------- Генерация (ТОЛЬКО успешная списывает токены) ----------
+# ---------------------------------------------------------
+# GENERATION (CHARGE TOKENS ONLY ON SUCCESS)
+# ---------------------------------------------------------
 
 async def generate_with_nano_banana(
     update: Update,
@@ -184,46 +208,56 @@ async def generate_with_nano_banana(
     user_id = update.effective_user.id
     settings = get_user_settings(context)
 
-    # 1. Проверяем баланс (не списывая)
+    # 1. Проверяем баланс (без списания)
     cost = get_generation_cost_tokens(settings)
     balance = await get_balance(user_id)
 
     if balance < cost:
         await update.message.reply_text(
-            f"Нужно {cost} токенов, у вас {balance}.\nПополните через /buy"
+            f"Недостаточно токенов: нужно {cost}, у вас {balance}.\n"
+            "Пополните баланс через /buy."
         )
         return
 
-    await update.message.reply_text("Генерирую… ⚙️")
+    await update.message.reply_text("Генерация запущена… ⚙️")
 
     try:
-        # 2. Генерируем КАРТИНКУ
-        image_url, img_bytes = await run_model(prompt, settings, image_urls=image_urls)
+        # 2. Генерация
+        image_url, img_bytes = await run_model(
+            prompt,
+            settings,
+            image_urls=image_urls,
+        )
 
-        # 3. Если дошли сюда — генерация успешна → списываем токены
+        # 3. Успешная генерация → списываем токены
         ok, used_cost, new_balance = await deduct_tokens(user_id, settings)
         if not ok:
-            logger.error("Не удалось списать токены после успешной генерации.")
+            logger.error(
+                "Не удалось списать токены после успешной генерации "
+                f"(user_id={user_id}, expected_cost={cost})"
+            )
             used_cost = 0
             new_balance = await get_balance(user_id)
 
-        # 4. Отправляем итог
+        # 4. Отправляем изображение
         bio = BytesIO(img_bytes)
-        bio.name = f"nano-banana.{settings['output_format']}"
+        bio.name = f"nano-banana.{settings.get('output_format', 'png')}"
         bio.seek(0)
 
         await update.message.reply_photo(photo=bio)
 
+        # 5. Сообщение о списании
         if used_cost > 0:
             await update.message.reply_text(
-                f"Списано {used_cost} токенов. Баланс: {new_balance}."
+                f"Списано {used_cost} токенов. Новый баланс: {new_balance}."
             )
         else:
             await update.message.reply_text(
-                "Генерация успешна, но токены не списались. Сообщите @glebyshkaone."
+                "Картинка сгенерирована, но токены не были списаны. "
+                "Если что-то идёт не так — напишите @glebyshkaone."
             )
 
-        # Лог
+        # 6. Логирование
         await log_generation(
             user_id=user_id,
             prompt=prompt,
@@ -233,23 +267,34 @@ async def generate_with_nano_banana(
         )
 
     except Exception as e:
-        logger.exception("Ошибка генерации")
+        logger.exception("Ошибка при генерации/отправке")
         await update.message.reply_text(
-            f"Ошибка при генерации. Токены НЕ списаны.\n{e}"
+            "Произошла ошибка при генерации, токены не списаны.\n"
+            f"Детали: {e}"
         )
 
 
-# ---------- Обработка текстовых промтов ----------
+# ---------------------------------------------------------
+# TEXT & PHOTO PROMPTS
+# ---------------------------------------------------------
 
 async def handle_text_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text.strip()
-    if not text or text.startswith("/"):
+    if not update.message or not update.message.text:
         return
-    await generate_with_nano_banana(update, context, text, image_urls=None)
+
+    prompt = update.message.text.strip()
+    if not prompt or prompt.startswith("/"):
+        return
+
+    await generate_with_nano_banana(update, context, prompt, image_urls=None)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await register_user(update.effective_user)
     message = update.message
+    if not message or not message.photo:
+        return
+
     photo = message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     image_url = file.file_path
@@ -258,16 +303,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await generate_with_nano_banana(update, context, prompt, image_urls=[image_url])
 
 
-# ---------- Покупка токенов через Stars ----------
+# ---------------------------------------------------------
+# BUY TOKENS VIA TELEGRAM STARS
+# ---------------------------------------------------------
 
 async def buy_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await register_user(update.effective_user)
+
     lines = ["Пополнение токенов через Telegram Stars:\n"]
     for t in TOKEN_PACKS:
-        lines.append(f"• {t} токенов — {tokens_to_stars(t)}⭐")
+        stars = tokens_to_stars(t)
+        lines.append(f"• {t} токенов — {stars}⭐")
+    lines.append("\nИли выберите «Другое количество» и введите нужное число токенов.")
 
-    lines.append("\nДругое количество — вручную.")
-
-    kb = [
+    keyboard = [
         [
             InlineKeyboardButton("500 токенов", callback_data="buy_pack|500"),
             InlineKeyboardButton("1000 токенов", callback_data="buy_pack|1000"),
@@ -282,100 +331,155 @@ async def buy_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     await update.message.reply_text(
         "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup(kb),
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
 async def buy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    data = query.data
+    if not query:
+        return
 
     await query.answer()
+    data = query.data or ""
 
-    # Покупка готового пакета
+    chat_id = query.message.chat_id
+
+    # Готовые паки
     if data.startswith("buy_pack|"):
-        tokens = int(data.split("|")[1])
-        stars = tokens_to_stars(tokens)
+        try:
+            tokens = int(data.split("|")[1])
+        except (IndexError, ValueError):
+            await query.message.reply_text("Ошибка в параметрах пакета. Попробуйте ещё раз.")
+            return
 
-        payload = f"{PAYLOAD_PREFIX}{tokens}"
+        stars = tokens_to_stars(tokens)
         prices = [LabeledPrice(label=f"{tokens} токенов", amount=stars)]
+        payload = f"{PAYLOAD_PREFIX}{tokens}"
 
         await query.message.reply_text(
-            f"Покупка {tokens} токенов за {stars}⭐"
+            f"Вы покупаете {tokens} токенов за {stars}⭐.\n"
+            "Оплата пройдёт через Telegram Stars."
         )
 
         await context.bot.send_invoice(
-            chat_id=query.message.chat_id,
+            chat_id=chat_id,
             title=f"{tokens} токенов",
-            description="Пополнение токенов nano-bot.",
+            description="Пакет токенов для nano-bot.",
             payload=payload,
-            provider_token="",
+            provider_token="",  # для Stars — пустая строка
             currency="XTR",
             prices=prices,
+            max_tip_amount=0,
+            need_name=False,
+            need_phone_number=False,
+            need_email=False,
+            need_shipping_address=False,
+            send_phone_number_to_provider=False,
+            send_email_to_provider=False,
+            is_flexible=False,
         )
         return
 
-    # Произвольное количество
+    # Произвольное количество токенов
     if data == "buy_custom":
         context.user_data[CUSTOM_TOKENS_KEY] = True
-        await query.message.reply_text("Введите количество токенов:")
+        await query.message.reply_text(
+            "Введите, сколько токенов вы хотите купить (целое число). "
+            "Я посчитаю стоимость в ⭐ и пришлю счёт."
+        )
         return
 
 
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.pre_checkout_query
-    if not query.invoice_payload.startswith(PAYLOAD_PREFIX):
-        await query.answer(ok=False, error_message="Ошибка товара.")
+    payload = query.invoice_payload or ""
+
+    if not payload.startswith(PAYLOAD_PREFIX):
+        await query.answer(ok=False, error_message="Неверный товар. Напишите @glebyshkaone.")
         return
 
     await query.answer(ok=True)
 
 
 async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    payment = update.message.successful_payment
-    tokens = int(payment.invoice_payload[len(PAYLOAD_PREFIX):])
+    message = update.message
+    if not message or not message.successful_payment:
+        return
 
-    new_balance = await add_tokens(update.effective_user.id, tokens)
+    payment = message.successful_payment
+    payload = payment.invoice_payload or ""
 
-    await update.message.reply_text(
-        f"Успешная оплата! +{tokens} токенов.\nБаланс: {new_balance}"
+    if not payload.startswith(PAYLOAD_PREFIX):
+        return
+
+    try:
+        tokens_to_add = int(payload[len(PAYLOAD_PREFIX):])
+    except ValueError:
+        return
+
+    user_id = update.effective_user.id
+    new_balance = await add_tokens(user_id, tokens_to_add)
+
+    await message.reply_text(
+        f"Оплата прошла успешно ✅\n"
+        f"Зачислено {tokens_to_add} токенов.\n"
+        f"Текущий баланс: {new_balance} токенов.\n\n"
+        "Можно продолжать генерировать ✨"
     )
 
 
-# ---------- Текст + кнопки ----------
+# ---------------------------------------------------------
+# REPLY BUTTONS + CUSTOM TOKEN INPUT
+# ---------------------------------------------------------
 
 async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text
-    user_id = update.effective_user.id
+    await register_user(update.effective_user)
+    text = (update.message.text or "").strip()
 
-    # ----- кастомный ввод количества токенов -----
+    # --- кастомный ввод токенов для покупки ---
     if context.user_data.get(CUSTOM_TOKENS_KEY):
         context.user_data[CUSTOM_TOKENS_KEY] = False
-
         try:
             tokens = int(text)
-        except:
-            await update.message.reply_text("Введите число.")
+            if tokens <= 0:
+                raise ValueError
+        except ValueError:
+            await update.message.reply_text(
+                "Нужно ввести положительное целое число токенов. "
+                "Попробуйте снова через /buy."
+            )
             return
 
         stars = tokens_to_stars(tokens)
-        payload = f"{PAYLOAD_PREFIX}{tokens}"
-        prices = [LabeledPrice(label=f"{tokens} токенов", amount=stars)]
+        await update.message.reply_text(
+            f"{tokens} токенов = {stars}⭐.\n"
+            "Сейчас пришлю счёт."
+        )
 
-        await update.message.reply_text(f"{tokens} токенов = {stars}⭐")
+        prices = [LabeledPrice(label=f"{tokens} токенов", amount=stars)]
+        payload = f"{PAYLOAD_PREFIX}{tokens}"
 
         await context.bot.send_invoice(
             chat_id=update.effective_chat.id,
             title=f"{tokens} токенов",
-            description="Пополнение токенов nano-bot.",
+            description="Пакет токенов для nano-bot.",
             payload=payload,
             provider_token="",
             currency="XTR",
             prices=prices,
+            max_tip_amount=0,
+            need_name=False,
+            need_phone_number=False,
+            need_email=False,
+            need_shipping_address=False,
+            send_phone_number_to_provider=False,
+            send_email_to_provider=False,
+            is_flexible=False,
         )
         return
 
-    # -------- обычные кнопки --------
+    # --- обычные reply-кнопки ---
     if text == "🚀 Старт":
         await start(update, context)
         return
@@ -395,56 +499,73 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         await history_command(update, context)
         return
 
-    # иначе → промт
+    # Остальное — текстовый промт
     await handle_text_prompt(update, context)
 
 
-# ---------- Callback настроек ----------
+# ---------------------------------------------------------
+# SETTINGS CALLBACK
+# ---------------------------------------------------------
 
 async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    data = query.data
-
-    if data.startswith("buy_"):
+    if not query:
         return
 
-    if data == "back|menu":
-        settings = get_user_settings(context)
-        bal = await get_balance(query.from_user.id)
-        await query.message.edit_text(
-            format_settings_text(settings, balance=bal),
-            reply_markup=build_settings_keyboard(settings),
-        )
+    data = query.data or ""
+
+    # оплатные «buy_» обрабатываются отдельно
+    if data.startswith("buy_"):
         return
 
     await query.answer()
 
-    parts = data.split("|")
-    if parts[0] == "reset":
-        context.user_data.clear()
+    # возврат в меню
+    if data == "back|menu":
         settings = get_user_settings(context)
-        bal = await get_balance(query.from_user.id)
+        balance = await get_balance(query.from_user.id)
         await query.message.edit_text(
-            "Сброшено.\n" + format_settings_text(settings, balance=bal),
+            format_settings_text(settings, balance=balance),
             reply_markup=build_settings_keyboard(settings),
         )
         return
 
-    if parts[0] == "set" and len(parts) == 3:
+    parts = data.split("|")
+    if not parts:
+        return
+
+    action = parts[0]
+
+    if action == "reset":
+        context.user_data.clear()
+        settings = get_user_settings(context)
+        balance = await get_balance(query.from_user.id)
+        await query.message.edit_text(
+            "Настройки сброшены.\n\n" +
+            format_settings_text(settings, balance=balance),
+            reply_markup=build_settings_keyboard(settings),
+        )
+        return
+
+    if action == "set" and len(parts) == 3:
         key = parts[1]
         value = parts[2]
+
         settings = get_user_settings(context)
+        # обновляем только известные ключи
         if key in settings:
             settings[key] = value
-        bal = await get_balance(query.from_user.id)
 
+        balance = await get_balance(query.from_user.id)
         await query.message.edit_text(
-            format_settings_text(settings, balance=bal),
+            format_settings_text(settings, balance=balance),
             reply_markup=build_settings_keyboard(settings),
         )
 
 
-# ---------- Регистрация ----------
+# ---------------------------------------------------------
+# REGISTRATION
+# ---------------------------------------------------------
 
 def register_user_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("start", start))
@@ -455,12 +576,17 @@ def register_user_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("model", model_menu_command))
     app.add_handler(CommandHandler("buy", buy_menu_command))
 
-    app.add_handler(CallbackQueryHandler(buy_callback, pattern="^buy_"))
+    # inline-кнопки покупки
+    app.add_handler(CallbackQueryHandler(buy_callback, pattern=r"^buy_"))
+
+    # настройки
     app.add_handler(CallbackQueryHandler(settings_callback))
 
+    # оплатные хендлеры
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
+    # фото и текст
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_buttons)
