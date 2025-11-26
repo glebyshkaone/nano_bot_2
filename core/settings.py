@@ -2,13 +2,13 @@ from typing import Dict, Optional
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
-from config import MODEL_INFO
+from config import MODEL_INFO, MODEL_SETTINGS_SCHEMA
 from core.balance import get_generation_cost_tokens
 
 
-# ----------------------------------------------------
-# НАСТРОЙКИ ПО УМОЛЧАНИЮ
-# ----------------------------------------------------
+# ---------------------------------------------------------
+# DEFAULT SETTINGS
+# ---------------------------------------------------------
 
 DEFAULT_SETTINGS = {
     "model": "banana",
@@ -19,35 +19,6 @@ DEFAULT_SETTINGS = {
 }
 
 
-# ----------------------------------------------------
-# СПЕЦИФИКАЦИИ МЕНЮ ДЛЯ МОДЕЛЕЙ
-# ----------------------------------------------------
-
-BANANA_SETTINGS = {
-    "aspect_ratio": [
-        "match_input_image","1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"
-    ],
-    "output_format": ["jpg", "png"],
-}
-
-BANANA_PRO_SETTINGS = {
-    "resolution": ["1K", "2K", "4K"],
-    "aspect_ratio": [
-        "match_input_image","1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"
-    ],
-    "output_format": ["jpg", "png"],
-    "safety_filter_level": [
-        "block_low_and_above",
-        "block_medium_and_above",
-        "block_only_high"
-    ],
-}
-
-
-# ----------------------------------------------------
-# ЛОГИКА ПОЛУЧЕНИЯ / ОБНОВЛЕНИЯ НАСТРОЕК
-# ----------------------------------------------------
-
 def get_user_settings(context: ContextTypes.DEFAULT_TYPE) -> Dict:
     data = context.user_data
     for k, v in DEFAULT_SETTINGS.items():
@@ -55,128 +26,79 @@ def get_user_settings(context: ContextTypes.DEFAULT_TYPE) -> Dict:
     return data
 
 
-# ----------------------------------------------------
-# ОПИСАНИЕ ТЕКУЩИХ НАСТРОЕК (текст)
-# ----------------------------------------------------
+# ---------------------------------------------------------
+# TEXT DESCRIPTION
+# ---------------------------------------------------------
 
 def format_settings_text(settings: Dict, balance: Optional[int] = None) -> str:
-    model = settings["model"]
+    model_key = settings["model"]
+    model = MODEL_INFO[model_key]
     cost = get_generation_cost_tokens(settings)
-    res = settings.get("resolution")
 
-    bal = f"Ваш баланс: {balance} токенов\n\n" if balance is not None else ""
+    lines = []
 
-    txt = f"{bal}"
-    txt += f"Модель: {MODEL_INFO[model]['label']} ({cost} токенов)\n"
+    if balance is not None:
+        lines.append(f"Ваш баланс: {balance} токенов\n")
 
-    if model == "banana_pro":
-        txt += f"Разрешение: {settings['resolution']}\n"
+    lines.append(f"Модель: {model['emoji']} {model['label']} ({cost} токенов)")
 
-    txt += f"Аспект: {settings['aspect_ratio']}\n"
-    txt += f"Формат: {settings['output_format']}\n"
+    schema = MODEL_SETTINGS_SCHEMA.get(model_key, [])
+    for field in schema:
+        key = field["key"]
+        label = field["label"]
+        value = settings.get(key)
+        lines.append(f"{label}: {value}")
 
-    if model == "banana_pro":
-        txt += f"Фильтр: {settings['safety_filter_level']}\n"
-
-    txt += "\nОтправь промт — я сгенерирую картинку."
-
-    return txt
+    lines.append("\nОтправь текстовый промт — я сгенерирую картинку.")
+    return "\n".join(lines)
 
 
-# ----------------------------------------------------
-# ДИНАМИЧЕСКОЕ МЕНЮ НАСТРОЕК
-# ----------------------------------------------------
+# ---------------------------------------------------------
+# DYNAMIC MENU FOR SETTINGS
+# ---------------------------------------------------------
 
 def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
-    model = settings["model"]
+    model_key = settings["model"]
 
     keyboard = []
 
-    # ————— Выбор модели
-    keyboard.append([
-        InlineKeyboardButton(
-            ("✅ " if model == "banana" else "") + "🍌 Banana",
-            callback_data="set|model|banana"
-        ),
-        InlineKeyboardButton(
-            ("✅ " if model == "banana_pro" else "") + "💎 Banana PRO",
-            callback_data="set|model|banana_pro"
-        ),
-    ])
+    # ------------------ MODEL SWITCHER ------------------
+    row_models = []
+    for key, info in MODEL_INFO.items():
+        prefix = "✅ " if key == model_key else ""
+        row_models.append(
+            InlineKeyboardButton(
+                f"{prefix}{info['emoji']} {info['label']}",
+                callback_data=f"set|model|{key}",
+            )
+        )
+    keyboard.append(row_models)
 
-    # ————— Параметры nano-banana
-    if model == "banana":
-        # aspect ratio
+    # ------------------ MODEL-SPECIFIC SETTINGS ---------
+    schema = MODEL_SETTINGS_SCHEMA.get(model_key, [])
+    for field in schema:
+        key = field["key"]
+        options = field["options"]
+        per_row = field.get("per_row", 3)
+
         row = []
-        for ar in BANANA_SETTINGS["aspect_ratio"]:
+        for opt in options:
+            prefix = "✅ " if settings.get(key) == opt else ""
             row.append(
                 InlineKeyboardButton(
-                    ("✅ " if settings["aspect_ratio"] == ar else "") + ar,
-                    callback_data=f"set|aspect_ratio|{ar}"
+                    f"{prefix}{opt}",
+                    callback_data=f"set|{key}|{opt}",
                 )
             )
-            if len(row) == 3:
+            if len(row) >= per_row:
                 keyboard.append(row)
                 row = []
         if row:
             keyboard.append(row)
 
-        # output_format
-        keyboard.append([
-            InlineKeyboardButton(
-                ("✅ " if settings["output_format"] == fmt else "") + fmt,
-                callback_data=f"set|output_format|{fmt}"
-            )
-            for fmt in BANANA_SETTINGS["output_format"]
-        ])
-
-    # ————— Параметры nano-banana-pro
-    if model == "banana_pro":
-
-        # resolution
-        keyboard.append([
-            InlineKeyboardButton(
-                ("✅ " if settings["resolution"] == r else "") + r,
-                callback_data=f"set|resolution|{r}"
-            ) for r in BANANA_PRO_SETTINGS["resolution"]
-        ])
-
-        # aspect ratio
-        row = []
-        for ar in BANANA_PRO_SETTINGS["aspect_ratio"]:
-            row.append(
-                InlineKeyboardButton(
-                    ("✅ " if settings["aspect_ratio"] == ar else "") + ar,
-                    callback_data=f"set|aspect_ratio|{ar}"
-                )
-            )
-            if len(row) == 3:
-                keyboard.append(row)
-                row = []
-        if row:
-            keyboard.append(row)
-
-        # output_format
-        keyboard.append([
-            InlineKeyboardButton(
-                ("✅ " if settings["output_format"] == fmt else "") + fmt,
-                callback_data=f"set|output_format|{fmt}"
-            )
-            for fmt in BANANA_PRO_SETTINGS["output_format"]
-        ])
-
-        # safety
-        keyboard.append([
-            InlineKeyboardButton(
-                ("✅ " if settings["safety_filter_level"] == fl else "") + fl,
-                callback_data=f"set|safety_filter_level|{fl}"
-            )
-            for fl in BANANA_PRO_SETTINGS["safety_filter_level"]
-        ])
-
-    # ————— Reset
-    keyboard.append([
-        InlineKeyboardButton("🔁 Сбросить", callback_data="reset|settings|default")
-    ])
+    # ------------------ RESET ---------------------------
+    keyboard.append(
+        [InlineKeyboardButton("🔁 Сбросить", callback_data="reset|settings|default")]
+    )
 
     return InlineKeyboardMarkup(keyboard)
