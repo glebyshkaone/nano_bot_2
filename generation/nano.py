@@ -1,57 +1,65 @@
 import logging
 from io import BytesIO
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 import httpx
 import replicate
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from generation.settings import get_user_settings, MODEL_CONFIG
-from supabase_client.client import register_user, get_balance, deduct_tokens
+from generation.settings import get_user_settings
+from supabase_client.client import get_balance, deduct_tokens, log_generation
 
 logger = logging.getLogger(__name__)
 
-# Соответствие ключа модели из настроек и slugs на Replicate
-MODEL_SLUGS = {
-    "nano": "google/nano-banana",
-    "nano_pro": "google/nano-banana-pro",
+# Две модели:
+# - nano_pro  -> google/nano-banana-pro (150 токенов)
+# - nano_base -> google/nano-banana (50 токенов)
+NANO_MODELS: Dict[str, Dict] = {
+    "nano_pro": {
+        "ref": "google/nano-banana-pro",
+        "price": 150,
+        "title": "Nano Banana PRO",
+    },
+    "nano_base": {
+        "ref": "google/nano-banana",
+        "price": 50,
+        "title": "Nano Banana",
+    },
 }
 
 
 async def generate_with_model(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
+    model_key: str,
     prompt: str,
     image_urls: Optional[List[str]] = None,
 ) -> None:
     """
-    Универсальная генерация через nano / nano_pro в зависимости от настроек пользователя.
-    - учитывает баланс (токены)
-    - списывает токены после успешной отправки
-    - поддерживает image_input (референсы)
+    Общая функция генерации для обеих моделей.
+    model_key:
+      - "nano_pro"  -> google/nano-banana-pro (150 токенов)
+      - "nano_base" -> google/nano-banana (50 токенов)
+    Если прилетит неизвестный ключ — используем PRO по умолчанию.
     """
-
-    await register_user(update.effective_user)
 
     if not update.message:
         return
 
-    prompt = (prompt or "").strip()
-    if not prompt:
-        await update.message.reply_text("Отправь текстовый промт 🙏")
+    tg_user = update.effective_user
+    if not tg_user:
         return
 
-    user_id = update.effective_user.id
-    settings = get_user_settings(context)
+    user_id = tg_user.id
 
-    # модель и цена
-    model_key = settings.get("model_key", "nano_pro")
-    model_info = MODEL_CONFIG.get(model_key, MODEL_CONFIG["nano_pro"])
-    model_slug = MODEL_SLUGS.get(model_key, MODEL_SLUGS["nano_pro"])
-    price = model_info["price"]
+    # Определяем модель
+    model_cfg = NANO_MODELS.get(model_key) or NANO_MODELS["nano_pro"]
+    model_ref: str = model_cfg["ref"]
+    price: int = model_cfg["price"]
+    model_title: str = model_cfg["title"]
 
-    # проверяем баланс
+    # Баланс
     balance = await get_balance(user_id)
     if balance < price:
         await update.message.reply_text(
@@ -60,40 +68,62 @@ async def generate_with_model(
         )
         return
 
-    await update.message.reply_text("Генерирую картинку, подожди 5–20 секунд… ⚙️")
-
-    input_payload = {
-        "prompt": prompt,
-        "aspect_ratio": settings["aspect_ratio"],
-        "resolution": settings["resolution"],
-        "output_format": settings["output_format"],
-        "safety_filter_level": settings["safety_filter_level"],
-    }
-    if image_urls:
-        # репликейт у nano-бананы принимает image_input
-        input_payload["image_input"] = image_urls
+    # Настройки из user_data (aspect_ratio, resolution и т.д.)
+    settings = get_user_settings(context)
 
     logger.info(
-        "Model: %s | user=%s | prompt=%s | settings=%s | refs=%s",
-        model_slug,
+        "User %s | model=%s (%s) | price=%s | prompt=%r | settings=%s | refs=%s",
         user_id,
+        model_key,
+        model_ref,
+        price,
         prompt,
         settings,
         image_urls,
     )
 
-    try:
-        # ВАЖНО: replicate использует REPLICATE_API_TOKEN из env, как мы уже настроили
-        output = replicate.run(model_slug, input=input_payload)
-        logger.info("Raw output from Replicate: %r (type=%s)", output, type(output))
+    await update.message.reply_text(
+        f"Генерирую картинку через {model_title}, подожди 5–20 секунд… ⚙️"
+    )
 
+    try:
+        input_payload = {
+            "prompt": prompt,
+            "aspect_ratio": settings["aspect_ratio"],
+            "resolution": settings["resolution"],
+            "output_format": settings["output_format"],
+            "safety_filter_level": settings["safety_filter_level"],
+        }
+
+        # Референсы (image_input)
+        if image_urls:
+            input_payload["image_input"] = image_urls
+
+        # ВАЖНО: replicate.run работает синхронно, поэтому вызываем его через run_in_executor
+        loop = context.application.loop
+        output = await loop.run_in_executor(
+            None,
+            lambda: replicate.run(
+                model_ref,
+                input=input_payload,
+            ),
+        )
+
+        logger.info(
+            "Raw output from replicate.run (model=%s): %r (type=%s)",
+            model_ref,
+            output,
+            type(output),
+        )
+
+        # Достаём URL
         image_url: Optional[str] = None
         if isinstance(output, list) and output:
             image_url = output[0]
         elif isinstance(output, str):
             image_url = output
         elif hasattr(output, "url"):
-            val = output.url
+            val = getattr(output, "url")
             image_url = val() if callable(val) else val
 
         if not image_url:
@@ -102,24 +132,33 @@ async def generate_with_model(
             )
             return
 
-        # Качаем картинку и отправляем как бинарь — чтобы не ловить 400 от Telegram
+        # Качаем картинку и отправляем как файл
         async with httpx.AsyncClient() as client:
             resp = await client.get(image_url)
             resp.raise_for_status()
             img_bytes = resp.content
 
         bio = BytesIO(img_bytes)
-        bio.name = f"nano-banana.{settings['output_format']}"
+        bio.name = f"{model_key}.{settings['output_format']}"
         bio.seek(0)
 
         await update.message.reply_photo(photo=bio)
-        logger.info("Image successfully sent to user")
+        logger.info("Image successfully sent to user %s via %s", user_id, model_ref)
 
-        # Списываем токены ТОЛЬКО после успешной отправки
-        if await deduct_tokens(user_id, price):
+        # Списываем токены ПОСЛЕ успешной отправки
+        success = await deduct_tokens(user_id, price)
+        if success:
             new_balance = await get_balance(user_id)
             await update.message.reply_text(
                 f"Списано {price} токенов. Новый баланс: {new_balance}."
+            )
+            # Логируем в Supabase
+            await log_generation(
+                user_id=user_id,
+                prompt=prompt,
+                image_url=image_url,
+                settings=settings,
+                tokens_spent=price,
             )
         else:
             await update.message.reply_text(
@@ -127,7 +166,7 @@ async def generate_with_model(
             )
 
     except Exception as e:
-        logger.exception("Ошибка при генерации/отправке")
+        logger.exception("Ошибка при генерации/отправке через %s", model_ref)
         await update.message.reply_text(
             f"Произошла ошибка при генерации: {e}\n"
             "Если ошибка повторяется — напишите @glebyshkaone."
