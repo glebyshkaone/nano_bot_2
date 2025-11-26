@@ -132,7 +132,7 @@ def build_settings_keyboard(settings: Dict) -> InlineKeyboardMarkup:
             ),
         ],
 
-        # RESET — ВАЖНО: корректный уровень отступа!
+        # RESET
         [
             InlineKeyboardButton(
                 "🔁 Сбросить к стандартным",
