@@ -1,9 +1,52 @@
+# ------------------------
+# Python
+# ------------------------
 __pycache__/
 *.pyc
-.env
-.env.*
-.venv/
+*.pyo
+*.pyd
+*.sqlite3
+
+# Virtual env
 venv/
-env/
+.venv/
+
+# Byte-compiled / optimized files
+*$py.class
+
+# ------------------------
+# Environment files
+# ------------------------
+.env
+.env.local
+.env.production
+.env.dev
+.env.*
+
+# Never commit secrets
+*token*
+*key*
+
+# ------------------------
+# IDE / editor
+# ------------------------
 .vscode/
 .idea/
+*.swp
+
+# ------------------------
+# Logs
+# ------------------------
+*.log
+logs/
+*.log.*
+
+# ------------------------
+# OS-specific
+# ------------------------
+.DS_Store
+
+# ------------------------
+# Archive files
+# ------------------------
+*.zip
