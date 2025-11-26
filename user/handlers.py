@@ -1,6 +1,5 @@
 from io import BytesIO
 import logging
-from math import ceil
 
 from telegram import (
     Update,
@@ -30,8 +29,8 @@ logger = logging.getLogger(__name__)
 
 # ---------- Константы для оплаты ----------
 
-# Базовая экономика: 150 токенов ~ 25⭐ (≈ 27–28 ₽)
-STARS_PER_150_TOKENS = 25
+# Базовая экономика: 150 токенов ~ 17⭐ (≈ 28 ₽ для пользователя)
+STARS_PER_150_TOKENS = 17
 PAYLOAD_PREFIX = "buy_tokens:"
 # Стандартные паки (в токенах)
 TOKEN_PACKS = [500, 1000, 1500]
@@ -41,7 +40,7 @@ CUSTOM_TOKENS_KEY = "awaiting_custom_tokens"
 def tokens_to_stars(tokens: int) -> int:
     """
     Переводим токены в звёзды по базовому курсу:
-    150 токенов -> 25⭐
+    150 токенов -> STARS_PER_150_TOKENS звёзд.
     """
     stars = round(tokens * STARS_PER_150_TOKENS / 150)
     return max(1, stars)
@@ -125,7 +124,9 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         stars = tokens_to_stars(t)
         text_lines.append(f"• {t} токенов — {stars}⭐")
 
-    text_lines.append("• Другое количество — выбираете сами, токены пересчитаются в ⭐ по тому же курсу.")
+    text_lines.append(
+        "• Другое количество — выбираете сами, токены пересчитаются в ⭐ по тому же курсу."
+    )
 
     await update.message.reply_text("\n".join(text_lines))
 
@@ -301,11 +302,11 @@ async def buy_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     keyboard = [
         [
-            InlineKeyboardButton(f"500 токенов", callback_data="buy_pack|500"),
-            InlineKeyboardButton(f"1000 токенов", callback_data="buy_pack|1000"),
+            InlineKeyboardButton("500 токенов", callback_data="buy_pack|500"),
+            InlineKeyboardButton("1000 токенов", callback_data="buy_pack|1000"),
         ],
         [
-            InlineKeyboardButton(f"1500 токенов", callback_data="buy_pack|1500"),
+            InlineKeyboardButton("1500 токенов", callback_data="buy_pack|1500"),
         ],
         [
             InlineKeyboardButton("Другое количество", callback_data="buy_custom"),
@@ -448,23 +449,31 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         prices = [LabeledPrice(label=f"{tokens} токенов", amount=stars)]
         payload = f"{PAYLOAD_PREFIX}{tokens}"
 
-        await update.message.bot.send_invoice(
-            chat_id=update.effective_chat.id,
-            title=f"{tokens} токенов",
-            description=f"Пакет {tokens} токенов для nano-bot.",
-            payload=payload,
-            provider_token="",
-            currency="XTR",
-            prices=prices,
-            max_tip_amount=0,
-            need_name=False,
-            need_phone_number=False,
-            need_email=False,
-            need_shipping_address=False,
-            send_phone_number_to_provider=False,
-            send_email_to_provider=False,
-            is_flexible=False,
-        )
+        try:
+            await context.bot.send_invoice(
+                chat_id=update.effective_chat.id,
+                title=f"{tokens} токенов",
+                description=f"Пакет {tokens} токенов для nano-bot.",
+                payload=payload,
+                provider_token="",
+                currency="XTR",
+                prices=prices,
+                max_tip_amount=0,
+                need_name=False,
+                need_phone_number=False,
+                need_email=False,
+                need_shipping_address=False,
+                send_phone_number_to_provider=False,
+                send_email_to_provider=False,
+                is_flexible=False,
+            )
+        except Exception as e:
+            logger.exception("Ошибка при отправке инвойса для кастомного количества токенов")
+            await update.message.reply_text(
+                f"Не удалось создать счёт: {e}\n"
+                "Попробуйте ещё раз через /buy или напишите @glebyshkaone."
+            )
+
         return
 
     # Режим админского поиска
