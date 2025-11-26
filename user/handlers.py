@@ -19,7 +19,12 @@ from telegram.ext import (
 
 from config import MODEL_INFO
 from core.registry import register_user, is_admin
-from core.balance import get_balance, deduct_tokens, add_tokens
+from core.balance import (
+    get_balance,
+    deduct_tokens,
+    add_tokens,
+    get_generation_cost_tokens,
+)
 from core.settings import get_user_settings, format_settings_text, build_settings_keyboard
 from core.supabase import fetch_generations, log_generation
 from core.generators import run_model
@@ -29,8 +34,8 @@ logger = logging.getLogger(__name__)
 
 # ---------- Константы для оплаты ----------
 
-# Базовая экономика: 150 токенов ~ 17⭐ (≈ 28 ₽ для пользователя)
-STARS_PER_150_TOKENS = 17
+# Базовая экономика: 150 токенов ~ 25⭐
+STARS_PER_150_TOKENS = 25
 PAYLOAD_PREFIX = "buy_tokens:"
 # Стандартные паки (в токенах)
 TOKEN_PACKS = [500, 1000, 1500]
@@ -69,9 +74,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_user(update.effective_user)
-    user_id = update.effective_user.id
     settings = get_user_settings(context)
-    balance = await get_balance(user_id)
+    balance = await get_balance(update.effective_user.id)
     await update.message.reply_text(
         format_settings_text(settings, balance=balance),
         reply_markup=build_settings_keyboard(settings),
@@ -81,13 +85,14 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_user(update.effective_user)
 
-    banana_cost = MODEL_INFO["banana"]["cost"]
-    pro_cost = MODEL_INFO["banana_pro"]["cost"]
+    banana_cost = MODEL_INFO["banana"]["base_cost"]
+    pro_base = MODEL_INFO["banana_pro"]["base_cost"]
+    pro_4k = pro_base * 2
 
     text = (
         "Как пользоваться ботом:\n\n"
-        f"• Banana: {banana_cost} токенов за изображение.\n"
-        f"• Banana PRO: {pro_cost} токенов за изображение.\n\n"
+        f"• Banana — {banana_cost} токенов за изображение.\n"
+        f"• Banana PRO — {pro_base} токенов за 1K/2K и {pro_4k} токенов за 4K.\n\n"
         "Пополнение токенов через Telegram Stars:\n"
         "• Стандартные паки: 500 / 1000 / 1500 токенов.\n"
         "• Можно ввести любое количество токенов вручную.\n"
@@ -108,14 +113,15 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = update.effective_user.id
     balance = await get_balance(user_id)
 
-    banana_cost = MODEL_INFO["banana"]["cost"]
-    pro_cost = MODEL_INFO["banana_pro"]["cost"]
+    banana_cost = MODEL_INFO["banana"]["base_cost"]
+    pro_base = MODEL_INFO["banana_pro"]["base_cost"]
+    pro_4k = pro_base * 2
 
     text_lines = [
         f"Ваш баланс: {balance} токенов.\n",
         "Тарифы генерации:",
         f"• Banana — {banana_cost} токенов",
-        f"• Banana PRO — {pro_cost} токенов",
+        f"• Banana PRO — {pro_base} токенов (1K/2K), {pro_4k} токенов (4K)",
         "",
         "Пополнение через Telegram Stars (/buy):",
     ]
@@ -164,14 +170,15 @@ async def model_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     settings = get_user_settings(context)
     current_model = settings["model"]
 
-    banana_cost = MODEL_INFO["banana"]["cost"]
-    pro_cost = MODEL_INFO["banana_pro"]["cost"]
+    banana_cost = MODEL_INFO["banana"]["base_cost"]
+    pro_base = MODEL_INFO["banana_pro"]["base_cost"]
+    pro_4k = pro_base * 2
 
     text = (
         "🧠 Выбор модели генерации\n\n"
         f"Текущая модель: *{MODEL_INFO[current_model]['label']}*\n\n"
-        f"• 🍌 Banana — {banana_cost} токенов\n"
-        f"• 💎 Banana PRO — {pro_cost} токенов\n\n"
+        f"• 🍌 Banana — {banana_cost} токенов за изображение.\n"
+        f"• 💎 Banana PRO — {pro_base} токенов (1K/2K), {pro_4k} токенов (4K).\n\n"
         "Выбери модель ниже:"
     )
 
