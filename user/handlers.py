@@ -1,6 +1,7 @@
 from io import BytesIO
 import logging
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from telegram import (
     Update,
@@ -344,11 +345,13 @@ async def generate_with_nano_banana(
             tokens_spent=used_cost or cost,
         )
 
-    except Exception as e:
-        logger.exception("Ошибка при генерации/отправке")
+    except Exception:
+        error_id = uuid4().hex
+        logger.exception("Ошибка при генерации/отправке (error_id=%s)", error_id)
         await update.message.reply_text(
             "Произошла ошибка при генерации, токены не списаны.\n"
-            f"Детали: {e}"
+            "Пожалуйста, попробуйте ещё раз позже. "
+            f"Код ошибки: {error_id}"
         )
 
 
@@ -496,6 +499,21 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
     try:
         tokens_to_add = int(payload[len(PAYLOAD_PREFIX):])
     except ValueError:
+        return
+
+    expected_stars = tokens_to_stars(tokens_to_add)
+    if payment.total_amount != expected_stars or payment.currency != "XTR":
+        logger.warning(
+            "Несовпадение параметров оплаты: payload_tokens=%s total_amount=%s currency=%s expected_amount=%s",
+            tokens_to_add,
+            payment.total_amount,
+            payment.currency,
+            expected_stars,
+        )
+        await message.reply_text(
+            "Не удалось подтвердить параметры платежа. "
+            "Средства не зачислены, обратитесь в поддержку."
+        )
         return
 
     user_id = update.effective_user.id
