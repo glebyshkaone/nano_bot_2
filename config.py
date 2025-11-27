@@ -9,10 +9,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-
-# Используем минимально привилегированный ключ для REST-запросов.
-# Предпочитайте передавать сюда ключ anon с корректно настроенным RLS.
-SUPABASE_REST_KEY = os.getenv("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_REST_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
 ADMIN_IDS: List[int] = []
@@ -28,13 +25,13 @@ if not TELEGRAM_BOT_TOKEN:
 if not REPLICATE_API_TOKEN:
     raise ValueError("REPLICATE_API_TOKEN not set")
 
-if not SUPABASE_URL or not SUPABASE_REST_KEY:
-    raise ValueError("SUPABASE_URL or SUPABASE_REST_KEY not set")
+if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    raise ValueError("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set")
 
 SUPABASE_REST_URL = SUPABASE_URL.rstrip("/") + "/rest/v1"
 SUPABASE_HEADERS_BASE = {
-    "apikey": SUPABASE_REST_KEY,
-    "Authorization": f"Bearer {SUPABASE_REST_KEY}",
+    "apikey": SUPABASE_SERVICE_ROLE_KEY,
+    "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
     "Content-Type": "application/json",
 }
 
