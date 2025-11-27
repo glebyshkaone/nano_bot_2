@@ -13,6 +13,11 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 # Используем минимально привилегированный ключ для REST-запросов.
 # Предпочитайте передавать сюда ключ anon с корректно настроенным RLS.
 SUPABASE_REST_KEY = os.getenv("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_REST_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+# Supabase отключается автоматически, если не заданы обязательные переменные окружения.
+SUPABASE_ENABLED = bool(SUPABASE_URL and SUPABASE_REST_KEY)
+SUPABASE_API_TOKENS_ENABLED = bool(SUPABASE_ENABLED and SUPABASE_SERVICE_ROLE_KEY)
 
 # Supabase отключается автоматически, если не заданы обязательные переменные окружения.
 SUPABASE_ENABLED = bool(SUPABASE_URL and SUPABASE_REST_KEY)

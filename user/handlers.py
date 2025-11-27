@@ -19,7 +19,7 @@ from telegram.ext import (
     filters,
 )
 
-from config import MODEL_INFO
+from config import MODEL_INFO, SUPABASE_API_TOKENS_ENABLED
 from core.registry import register_user
 from core.balance import (
     get_balance,
@@ -289,6 +289,12 @@ async def ps_token_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """Выдаём токен для Photoshop-плагина."""
     await register_user(update.effective_user)
     user_id = update.effective_user.id
+
+    if not SUPABASE_API_TOKENS_ENABLED:
+        await update.message.reply_text(
+            "Supabase не настроен для выдачи токенов. Обратитесь к администратору."
+        )
+        return
 
     token = await create_api_token_for_user(user_id)
 
