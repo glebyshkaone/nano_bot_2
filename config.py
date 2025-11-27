@@ -11,7 +11,7 @@ REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
+ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "1255054637").strip()
 ADMIN_IDS: List[int] = []
 if ADMIN_IDS_RAW:
     try:
