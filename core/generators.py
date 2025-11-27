@@ -47,6 +47,7 @@ async def run_model(
     prompt: str,
     settings: Dict,
     image_urls: Optional[List[str]] = None,
+    image_bytes: Optional[bytes] = None,
 ) -> Tuple[str, bytes]:
     """
     Универсальный раннер моделей:
@@ -148,6 +149,24 @@ async def run_model(
         image_url, image_bytes = _extract_url_and_bytes(output)
         if image_url is None:
             raise ValueError("Не удалось получить URL изображения от flux_ultra")
+
+        return image_url, image_bytes or b""
+
+    # -------- REMOVE BACKGROUND ----------
+    if model_key == "remove_bg":
+        if not image_urls and not image_bytes:
+            raise ValueError("Для Remove BG нужно отправить фото.")
+
+        payload = {"image": image_bytes or image_urls[0]}
+
+        output = replicate_client.run(
+            model_id,
+            input=payload,
+        )
+
+        image_url, image_bytes = _extract_url_and_bytes(output)
+        if image_url is None:
+            raise ValueError("Не удалось получить URL изображения от remove_bg")
 
         return image_url, image_bytes or b""
 

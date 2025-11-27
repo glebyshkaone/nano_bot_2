@@ -63,6 +63,9 @@ def format_settings_text(settings: Dict, balance: Optional[int] = None) -> str:
         lines.append(f"Safety: {settings.get('safety_tolerance', '2')}")
         lines.append(f"Strength: {settings.get('image_prompt_strength', '0.1')}")
 
+    if model_key == "remove_bg":
+        lines.append("5 бесплатных удалений фона в день, затем 1₽ (1 токен).")
+
     lines.append("\nОтправь текстовый промт — я сгенерирую картинку.")
     lines.append("Можно отправить фото с подписью — оно станет референсом.")
 

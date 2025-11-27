@@ -1,5 +1,6 @@
 from io import BytesIO
 import logging
+from datetime import datetime, timezone
 
 from telegram import (
     Update,
@@ -26,7 +27,7 @@ from core.balance import (
     get_generation_cost_tokens,
 )
 from core.settings import get_user_settings, format_settings_text, build_settings_keyboard
-from core.supabase import fetch_generations, log_generation
+from core.supabase import fetch_generations, log_generation, count_generations_since
 from core.generators import run_model
 from core.api_tokens import create_api_token_for_user
 from .keyboards import build_reply_keyboard
@@ -43,6 +44,7 @@ TOKEN_PACKS = [500, 1000, 1500]
 CUSTOM_TOKENS_KEY = "awaiting_custom_tokens"
 FLUX_INPUT_KEY = "awaiting_flux_input"  # seed / safety / strength
 API_BASE_URL_FOR_PS = "https://nanobot.glebmishin72.workers.dev"
+FREE_REMOVE_BG_PER_DAY = 5
 
 
 def tokens_to_stars(tokens: int) -> int:
@@ -220,49 +222,111 @@ async def model_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # GENERATION
 # ---------------------------------------------------------
 
+
+def _today_utc_iso() -> str:
+    today = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return today.isoformat()
+
+
+async def get_remove_bg_free_left(user_id: int) -> int:
+    model_id = MODEL_INFO["remove_bg"]["replicate"]
+    used = await count_generations_since(user_id, model_id, _today_utc_iso())
+    return max(0, FREE_REMOVE_BG_PER_DAY - used)
+
+
+async def get_effective_cost(user_id: int, settings: dict) -> tuple[int, int | None]:
+    model_key = settings.get("model", "banana")
+    if model_key == "remove_bg":
+        free_left = await get_remove_bg_free_left(user_id)
+        if free_left > 0:
+            return 0, free_left
+        return MODEL_INFO["remove_bg"]["base_cost"], 0
+
+    return get_generation_cost_tokens(settings), None
+
+
+def build_run_message(model_key: str, cost: int, free_left: int | None) -> str:
+    if model_key == "remove_bg":
+        if cost == 0:
+            remaining = max(0, (free_left or 1) - 1)
+            return (
+                "Удаляю фон… Бесплатно, осталось "
+                f"{remaining} из {FREE_REMOVE_BG_PER_DAY} на сегодня."
+            )
+        return f"Удаляю фон… Стоимость {cost} токенов."
+
+    return "Генерация запущена… ⚙️"
+
+
+def free_run_message(model_key: str, free_left: int | None) -> str | None:
+    if model_key == "remove_bg" and free_left is not None:
+        remaining = max(0, (free_left or 1) - 1)
+        return (
+            "Фон удалён бесплатно. Осталось "
+            f"{remaining} из {FREE_REMOVE_BG_PER_DAY} на сегодня."
+        )
+
+    return None
+
 async def generate_with_nano_banana(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     prompt: str,
     image_urls=None,
+    image_bytes: bytes | None = None,
 ) -> None:
     await register_user(update.effective_user)
     user_id = update.effective_user.id
     settings = get_user_settings(context)
+    model_key = settings.get("model", "banana")
 
-    cost = get_generation_cost_tokens(settings)
+    cost, free_left = await get_effective_cost(user_id, settings)
     balance = await get_balance(user_id)
 
-    if balance < cost:
+    if cost > 0 and balance < cost:
         await update.message.reply_text(
             f"Недостаточно токенов: нужно {cost}, у вас {balance}.\n"
             "Пополните баланс через /buy."
         )
         return
 
-    await update.message.reply_text("Генерация запущена… ⚙️")
+    if model_key == "remove_bg" and not image_urls:
+        await update.message.reply_text("Пришлите фото, чтобы удалить фон.")
+        return
+
+    await update.message.reply_text(build_run_message(model_key, cost, free_left))
 
     try:
         image_url, img_bytes = await run_model(
             prompt,
             settings,
             image_urls=image_urls,
+            image_bytes=image_bytes,
         )
 
-        ok, used_cost, new_balance = await deduct_tokens(user_id, settings)
-        if not ok:
-            logger.error(
-                "Не удалось списать токены после успешной генерации "
-                f"(user_id={user_id}, expected_cost={cost})"
+        used_cost = 0
+        new_balance = balance
+        if cost > 0:
+            ok, used_cost, new_balance = await deduct_tokens(
+                user_id, settings, override_cost=cost
             )
-            used_cost = 0
-            new_balance = await get_balance(user_id)
+            if not ok:
+                logger.error(
+                    "Не удалось списать токены после успешной генерации "
+                    f"(user_id={user_id}, expected_cost={cost})"
+                )
+                used_cost = 0
+                new_balance = await get_balance(user_id)
 
-        bio = BytesIO(img_bytes)
-        bio.name = f"nano-bot.{settings.get('output_format', 'png')}"
-        bio.seek(0)
-
-        await update.message.reply_photo(photo=bio)
+        if img_bytes:
+            bio = BytesIO(img_bytes)
+            bio.name = f"nano-bot.{settings.get('output_format', 'png')}"
+            bio.seek(0)
+            await update.message.reply_photo(photo=bio)
+        else:
+            await update.message.reply_photo(photo=image_url)
 
         if used_cost > 0:
             await update.message.reply_text(
@@ -270,8 +334,8 @@ async def generate_with_nano_banana(
             )
         else:
             await update.message.reply_text(
-                "Картинка сгенерирована, но токены не были списаны. "
-                "Если что-то идёт не так — напишите @glebyshkaone."
+                free_run_message(model_key, free_left)
+                or "Картинка сгенерирована без списания токенов."
             )
 
         await log_generation(
@@ -302,6 +366,11 @@ async def handle_text_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not prompt or prompt.startswith("/"):
         return
 
+    settings = get_user_settings(context)
+    if settings.get("model") == "remove_bg":
+        await update.message.reply_text("Отправьте фото, чтобы удалить фон с изображения.")
+        return
+
     await generate_with_nano_banana(update, context, prompt, image_urls=None)
 
 
@@ -314,9 +383,23 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     photo = message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
     image_url = file.file_path
+    image_bytes = None
+
+    settings = get_user_settings(context)
+    if settings.get("model") == "remove_bg":
+        try:
+            image_bytes = bytes(await file.download_as_bytearray())
+        except Exception:
+            logger.exception("Не удалось скачать фото как байты для remove_bg")
 
     prompt = (message.caption or "").strip() or "image to image"
-    await generate_with_nano_banana(update, context, prompt, image_urls=[image_url])
+    await generate_with_nano_banana(
+        update,
+        context,
+        prompt,
+        image_urls=[image_url],
+        image_bytes=image_bytes,
+    )
 
 
 # ---------------------------------------------------------
