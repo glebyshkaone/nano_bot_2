@@ -14,6 +14,9 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 # Предпочитайте передавать сюда ключ anon с корректно настроенным RLS.
 SUPABASE_REST_KEY = os.getenv("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_REST_KEY")
 
+# Supabase отключается автоматически, если не заданы обязательные переменные окружения.
+SUPABASE_ENABLED = bool(SUPABASE_URL and SUPABASE_REST_KEY)
+
 ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
 ADMIN_IDS: List[int] = []
 if ADMIN_IDS_RAW:
@@ -28,15 +31,16 @@ if not TELEGRAM_BOT_TOKEN:
 if not REPLICATE_API_TOKEN:
     raise ValueError("REPLICATE_API_TOKEN not set")
 
-if not SUPABASE_URL or not SUPABASE_REST_KEY:
-    raise ValueError("SUPABASE_URL or SUPABASE_REST_KEY not set")
-
-SUPABASE_REST_URL = SUPABASE_URL.rstrip("/") + "/rest/v1"
-SUPABASE_HEADERS_BASE = {
-    "apikey": SUPABASE_REST_KEY,
-    "Authorization": f"Bearer {SUPABASE_REST_KEY}",
-    "Content-Type": "application/json",
-}
+SUPABASE_REST_URL = SUPABASE_URL.rstrip("/") + "/rest/v1" if SUPABASE_ENABLED else ""
+SUPABASE_HEADERS_BASE = (
+    {
+        "apikey": SUPABASE_REST_KEY,
+        "Authorization": f"Bearer {SUPABASE_REST_KEY}",
+        "Content-Type": "application/json",
+    }
+    if SUPABASE_ENABLED
+    else {}
+)
 
 # ---------------------------------------------------------
 # MODELS CONFIG
