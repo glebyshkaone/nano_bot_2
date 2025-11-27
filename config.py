@@ -13,7 +13,9 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 DEFAULT_ADMIN_IDS = [1255054637]
 
-ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
+ADMIN_IDS_RAW = os.getenv(
+    "ADMIN_IDS", ",".join(str(x) for x in DEFAULT_ADMIN_IDS)
+).strip()
 ADMIN_IDS: List[int] = []
 if ADMIN_IDS_RAW:
     try:
