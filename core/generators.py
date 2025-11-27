@@ -151,5 +151,25 @@ async def run_model(
 
         return image_url, image_bytes or b""
 
+    # -------- REMOVE BACKGROUND ----------
+    if model_key == "remove_bg":
+        if not image_urls:
+            raise ValueError("Для Remove BG нужно отправить фото.")
+
+        payload = {
+            "image": image_urls[0],
+        }
+
+        output = replicate_client.run(
+            model_id,
+            input=payload,
+        )
+
+        image_url, image_bytes = _extract_url_and_bytes(output)
+        if image_url is None:
+            raise ValueError("Не удалось получить URL изображения от remove_bg")
+
+        return image_url, image_bytes or b""
+
     # fallback
     raise ValueError(f"Unsupported model: {model_key}")

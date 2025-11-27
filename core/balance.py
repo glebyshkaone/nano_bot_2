@@ -71,13 +71,15 @@ def get_generation_cost_tokens(settings: dict) -> int:
     return base_cost
 
 
-async def deduct_tokens(user_id: int, settings: dict) -> Tuple[bool, int, int]:
+async def deduct_tokens(
+    user_id: int, settings: dict, override_cost: int | None = None
+) -> Tuple[bool, int, int]:
     """
     Списывает токены за одну генерацию по текущим настройкам.
     Возвращает:
       (успех, стоимость, новый_баланс_или_текущий_если_не_хватило)
     """
-    cost = get_generation_cost_tokens(settings)
+    cost = override_cost if override_cost is not None else get_generation_cost_tokens(settings)
     current = await get_balance(user_id)
 
     if current < cost:
