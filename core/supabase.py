@@ -2,12 +2,20 @@ from typing import Optional, Dict, List
 import httpx
 import logging
 
-from config import SUPABASE_REST_URL, SUPABASE_HEADERS_BASE
+from config import SUPABASE_ENABLED, SUPABASE_REST_URL, SUPABASE_HEADERS_BASE
 
 logger = logging.getLogger(__name__)
 
+def _supabase_disabled_warning(action: str) -> None:
+    logger.warning("Supabase is disabled, skipping %s", action)
+
+
 # --------- USERS ---------
 async def supabase_get_user(user_id: int) -> Optional[Dict]:
+    if not SUPABASE_ENABLED:
+        _supabase_disabled_warning("supabase_get_user")
+        return None
+
     params = {
         "id": f"eq.{user_id}",
         "select": "id,username,first_name,last_name,balance,created_at,updated_at",
@@ -25,6 +33,10 @@ async def supabase_get_user(user_id: int) -> Optional[Dict]:
 
 
 async def supabase_insert_user(payload: Dict) -> None:
+    if not SUPABASE_ENABLED:
+        _supabase_disabled_warning("supabase_insert_user")
+        return
+
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{SUPABASE_REST_URL}/telegram_users",
@@ -37,6 +49,10 @@ async def supabase_insert_user(payload: Dict) -> None:
 
 
 async def supabase_update_user(user_id: int, payload: Dict) -> None:
+    if not SUPABASE_ENABLED:
+        _supabase_disabled_warning("supabase_update_user")
+        return
+
     async with httpx.AsyncClient() as client:
         resp = await client.patch(
             f"{SUPABASE_REST_URL}/telegram_users",
@@ -49,6 +65,10 @@ async def supabase_update_user(user_id: int, payload: Dict) -> None:
 
 
 async def supabase_fetch_recent_users(limit: int = 20) -> List[Dict]:
+    if not SUPABASE_ENABLED:
+        _supabase_disabled_warning("supabase_fetch_recent_users")
+        return []
+
     params = {
         "select": "id,username,first_name,last_name,balance,created_at",
         "order": "created_at.desc",
@@ -66,6 +86,10 @@ async def supabase_fetch_recent_users(limit: int = 20) -> List[Dict]:
 
 
 async def supabase_search_users(query: str, limit: int = 20) -> List[Dict]:
+    if not SUPABASE_ENABLED:
+        _supabase_disabled_warning("supabase_search_users")
+        return []
+
     params = {
         "select": "id,username,first_name,last_name,balance,created_at",
         "limit": str(limit),
@@ -97,6 +121,10 @@ async def log_admin_action(
     amount: int,
     note: Optional[str] = None,
 ) -> None:
+    if not SUPABASE_ENABLED:
+        _supabase_disabled_warning("log_admin_action")
+        return
+
     payload = {
         "admin_id": admin_id,
         "target_user_id": target_id,
@@ -123,6 +151,10 @@ async def log_generation(
     settings: Dict,
     tokens_spent: int,
 ) -> None:
+    if not SUPABASE_ENABLED:
+        _supabase_disabled_warning("log_generation")
+        return
+
     model_key = settings.get("model", "banana")
     from config import MODEL_INFO  # локальный импорт, чтобы избежать циклов
 
@@ -155,6 +187,10 @@ async def count_generations_since(
     created_after_iso: str,
 ) -> int:
     """Возвращает количество генераций по модели с указанной даты."""
+    if not SUPABASE_ENABLED:
+        _supabase_disabled_warning("count_generations_since")
+        return 0
+
     headers = {
         **SUPABASE_HEADERS_BASE,
         "Prefer": "count=exact",
@@ -197,6 +233,10 @@ async def count_generations_since(
 
 
 async def fetch_generations(user_id: int, limit: int = 5) -> List[Dict]:
+    if not SUPABASE_ENABLED:
+        _supabase_disabled_warning("fetch_generations")
+        return []
+
     params = {
         "select": "id,prompt,image_url,tokens_spent,created_at",
         "user_id": f"eq.{user_id}",
