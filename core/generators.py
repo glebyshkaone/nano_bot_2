@@ -1,3 +1,4 @@
+import io
 import logging
 from typing import Dict, List, Tuple, Optional
 
@@ -157,7 +158,17 @@ async def run_model(
         if not image_urls and not image_bytes:
             raise ValueError("Для Remove BG нужно отправить фото.")
 
-        payload = {"image": image_bytes or image_urls[0]}
+        # Replicate надёжнее принимает файловый-like объект, чем сырые байты
+        # (устанавливает Content-Type и имя). Поэтому, если байты есть —
+        # оборачиваем в BytesIO с фиктивным именем; иначе используем URL.
+        image_input = None
+        if image_bytes:
+            image_input = io.BytesIO(image_bytes)
+            image_input.name = "upload.png"
+        else:
+            image_input = image_urls[0]
+
+        payload = {"image": image_input}
 
         output = replicate_client.run(
             model_id,
