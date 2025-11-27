@@ -117,8 +117,18 @@ async def run_model(
             ar = "1:1"
 
         raw_flag = str(settings.get("raw", "false")).lower() == "true"
-        safety_tol = int(str(settings.get("safety_tolerance", "2")))
-        img_strength = float(str(settings.get("image_prompt_strength", "0.1")))
+
+        safety_tol = 2
+        try:
+            safety_tol = int(str(settings.get("safety_tolerance", "2")))
+        except (ValueError, TypeError):
+            logger.warning("Invalid safety_tolerance value, fallback to 2")
+
+        img_strength = 0.1
+        try:
+            img_strength = float(str(settings.get("image_prompt_strength", "0.1")))
+        except (ValueError, TypeError):
+            logger.warning("Invalid image_prompt_strength value, fallback to 0.1")
 
         payload = {
             "prompt": prompt,
