@@ -80,7 +80,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings = get_user_settings(context)
     balance = await get_balance(update.effective_user.id)
-    await update.message.reply_text(
+    message = update.effective_message
+    if not message:
+        return
+    await message.reply_text(
         format_settings_text(settings, balance=balance),
         reply_markup=build_settings_keyboard(settings),
     )
@@ -109,10 +112,133 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("\n".join(lines))
 
 
+async def gpts_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await register_user(update.effective_user)
+    message = update.effective_message
+    if not message:
+        return
+
+    text = (
+        "🤖 GPTs / Claude / Gemini\n\n"
+        "Здесь будет диалог с языковыми моделями. "
+        "Скоро добавим подключение к топовым LLM, чтобы можно было вести "
+        "расширенные переписки прямо в чате."
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("⬅ Главное меню", callback_data="nav|main")],
+        ]
+    )
+
+    await message.reply_text(text, reply_markup=keyboard)
+
+
+async def images_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await register_user(update.effective_user)
+    message = update.effective_message
+    if not message:
+        return
+
+    lines = ["🖼️ Изображения", ""]
+    lines.append("Генеративные модели и инструменты, доступные сейчас:")
+    for key, info in MODEL_INFO.items():
+        emoji = info.get("emoji", "🧠")
+        pricing = info.get("pricing_text", f"{info['base_cost']} токенов")
+        lines.append(f"• {emoji} {info['label']} — {pricing}")
+    lines.append("")
+    lines.append("Выбирайте модель, настраивайте параметры и отправляйте промт — остальное сделает бот.")
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🧠 Выбор модели", callback_data="nav|models")],
+            [InlineKeyboardButton("🎛 Настройки генерации", callback_data="nav|settings")],
+            [InlineKeyboardButton("⬅ Главное меню", callback_data="nav|main")],
+        ]
+    )
+
+    await message.reply_text("\n".join(lines), reply_markup=keyboard)
+
+
+async def video_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await register_user(update.effective_user)
+    message = update.effective_message
+    if not message:
+        return
+
+    text = (
+        "🎬 Видео будущего\n\n"
+        "Раздел для генеративных видео-моделей. "
+        "Мы готовим лучшие пресеты для создания роликов по тексту и картинкам. "
+        "Следите за обновлениями — скоро здесь появятся новые кнопки."
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("⬅ Главное меню", callback_data="nav|main")],
+        ]
+    )
+
+    await message.reply_text(text, reply_markup=keyboard)
+
+
+async def profile_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await register_user(update.effective_user)
+    message = update.effective_message
+    if not message:
+        return
+
+    balance = await get_balance(update.effective_user.id)
+    lines = [
+        "👤 Профиль",
+        "",
+        f"Баланс: {balance} токенов.",
+        "История последних генераций доступна в разделе ниже.",
+    ]
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("💰 Баланс", callback_data="nav|balance")],
+            [InlineKeyboardButton("📜 История", callback_data="nav|history")],
+            [InlineKeyboardButton("⬅ Главное меню", callback_data="nav|main")],
+        ]
+    )
+
+    await message.reply_text("\n".join(lines), reply_markup=keyboard)
+
+
+async def knowledge_base_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await register_user(update.effective_user)
+    message = update.effective_message
+    if not message:
+        return
+
+    text = (
+        "📚 База знаний\n\n"
+        "Собрали основные команды и ответы в одном месте:\n"
+        "• /help — краткая справка по возможностям.\n"
+        "• /menu — настройки генерации.\n"
+        "• /model — выбор модели.\n"
+        "• /balance — текущий баланс.\n"
+        "• /history — последние генерации."
+    )
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("⬅ Главное меню", callback_data="nav|main")],
+        ]
+    )
+
+    await message.reply_text(text, reply_markup=keyboard)
+
+
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_user(update.effective_user)
     user_id = update.effective_user.id
     balance = await get_balance(user_id)
+    message = update.effective_message
+    if not message:
+        return
 
     lines = [f"Ваш баланс: {balance} токенов.\n", "Тарифы генерации:"]
 
@@ -128,16 +254,19 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         lines.append(f"• {t} токенов — {stars}⭐")
     lines.append("• Другое количество — также считается по этому курсу.")
 
-    await update.message.reply_text("\n".join(lines))
+    await message.reply_text("\n".join(lines))
 
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await register_user(update.effective_user)
     user_id = update.effective_user.id
     gens = await fetch_generations(user_id, limit=5)
+    message = update.effective_message
+    if not message:
+        return
 
     if not gens:
-        await update.message.reply_text("Пока нет сохранённой истории генераций.")
+        await message.reply_text("Пока нет сохранённой истории генераций.")
         return
 
     lines = ["Ваши последние генерации (до 5):", ""]
@@ -153,7 +282,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             lines.append(f"  {image_url}")
         lines.append("")
 
-    await update.message.reply_text("\n".join(lines))
+    await message.reply_text("\n".join(lines))
 
 
 async def ps_token_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -182,6 +311,9 @@ async def model_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await register_user(update.effective_user)
     settings = get_user_settings(context)
     current_model = settings["model"]
+    message = update.effective_message
+    if not message:
+        return
 
     lines = ["🧠 Выбор модели генерации:\n"]
     for key, info in MODEL_INFO.items():
@@ -213,7 +345,7 @@ async def model_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("⬅ Вернуться в меню", callback_data="back|menu")]
     )
 
-    await update.message.reply_text(
+    await message.reply_text(
         "\n".join(lines),
         reply_markup=InlineKeyboardMarkup(buttons_rows),
     )
@@ -622,27 +754,68 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     # --- обычные reply-кнопки ---
-    if text == "🚀 Старт":
-        await start(update, context)
+    if text == "👤 Профиль":
+        await profile_menu_command(update, context)
         return
-    if text == "🎛 Меню":
-        await menu_command(update, context)
+    if text == "🤖 GPTs":
+        await gpts_menu_command(update, context)
         return
-    if text == "🧠 Модель":
-        await model_menu_command(update, context)
+    if text == "🖼️ Изображения":
+        await images_menu_command(update, context)
+        return
+    if text == "🎬 Видео":
+        await video_menu_command(update, context)
         return
     if text == "ℹ Помощь":
         await help_command(update, context)
         return
-    if text == "💰 Баланс":
-        await balance_command(update, context)
-        return
-    if text == "📜 История":
-        await history_command(update, context)
+    if text == "📚 База знаний":
+        await knowledge_base_command(update, context)
         return
 
     # Остальное — текстовый промт
     await handle_text_prompt(update, context)
+
+
+# ---------------------------------------------------------
+# NAVIGATION CALLBACKS
+# ---------------------------------------------------------
+
+
+async def navigation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query:
+        return
+
+    data = query.data or ""
+    if not data.startswith("nav|"):
+        return
+
+    await query.answer()
+    action = data.split("|", maxsplit=1)[1] if "|" in data else ""
+
+    if action == "profile":
+        await profile_menu_command(update, context)
+    elif action == "gpts":
+        await gpts_menu_command(update, context)
+    elif action == "images":
+        await images_menu_command(update, context)
+    elif action == "video":
+        await video_menu_command(update, context)
+    elif action == "balance":
+        await balance_command(update, context)
+    elif action == "history":
+        await history_command(update, context)
+    elif action == "models":
+        await model_menu_command(update, context)
+    elif action == "settings":
+        await menu_command(update, context)
+    elif action == "main":
+        message = update.effective_message
+        if message:
+            await message.reply_text(
+                "Главное меню:", reply_markup=build_reply_keyboard()
+            )
 
 
 # ---------------------------------------------------------
@@ -734,6 +907,7 @@ def register_user_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("buy", buy_menu_command))
     app.add_handler(CommandHandler("ps_token", ps_token_command))
 
+    app.add_handler(CallbackQueryHandler(navigation_callback, pattern=r"^nav\|"))
     app.add_handler(CallbackQueryHandler(buy_callback, pattern=r"^buy_"))
     app.add_handler(CallbackQueryHandler(settings_callback))
 
