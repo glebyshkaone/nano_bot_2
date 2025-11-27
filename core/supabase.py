@@ -123,12 +123,17 @@ async def log_generation(
     settings: Dict,
     tokens_spent: int,
 ) -> None:
+    model_key = settings.get("model", "banana")
+    from config import MODEL_INFO  # локальный импорт, чтобы избежать циклов
+
+    model_cfg = MODEL_INFO.get(model_key, MODEL_INFO.get("banana", {}))
+    replicate_id = model_cfg.get("replicate", model_key)
     payload = {
         "user_id": user_id,
         "prompt": prompt,
         "image_url": image_url,
         "tokens_spent": tokens_spent,
-        "model": "google/nano-banana-pro",
+        "model": replicate_id,
         "aspect_ratio": settings.get("aspect_ratio"),
         "resolution": settings.get("resolution"),
         "output_format": settings.get("output_format"),
@@ -142,6 +147,53 @@ async def log_generation(
         )
     if resp.status_code >= 300:
         logger.warning("Failed to log generation: %s %s", resp.status_code, resp.text)
+
+
+async def count_generations_since(
+    user_id: int,
+    model: str,
+    created_after_iso: str,
+) -> int:
+    """Возвращает количество генераций по модели с указанной даты."""
+    headers = {
+        **SUPABASE_HEADERS_BASE,
+        "Prefer": "count=exact",
+    }
+    params = {
+        "user_id": f"eq.{user_id}",
+        "model": f"eq.{model}",
+        "created_at": f"gte.{created_after_iso}",
+        "select": "id",
+    }
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{SUPABASE_REST_URL}/generations",
+            headers=headers,
+            params=params,
+            timeout=10.0,
+        )
+
+    if resp.status_code >= 300:
+        logger.warning(
+            "Failed to count generations: %s %s", resp.status_code, resp.text
+        )
+        return 0
+
+    content_range = resp.headers.get("content-range") or resp.headers.get(
+        "Content-Range"
+    )
+    if content_range and "/" in content_range:
+        try:
+            return int(content_range.split("/")[-1])
+        except ValueError:
+            pass
+
+    try:
+        data = resp.json()
+        return len(data)
+    except Exception:
+        return 0
 
 
 async def fetch_generations(user_id: int, limit: int = 5) -> List[Dict]:

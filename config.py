@@ -64,6 +64,14 @@ MODEL_INFO = {
         "base_cost": 80,  # ~0.12$ при x2 от себестоимости 0.06$
         "pricing_text": "80 токенов за изображение",
     },
+    "remove_bg": {
+        "key": "remove_bg",
+        "label": "Remove BG",
+        "emoji": "🪄",
+        "replicate": "lucataco/remove-bg",
+        "base_cost": 1,
+        "pricing_text": "5 бесплатных в день, затем 1₽",
+    },
 }
 
 # ---------------------------------------------------------
@@ -153,4 +161,7 @@ MODEL_SETTINGS_SCHEMA = {
             "per_row": 2,
         },
     ],
+
+    # ---------- REMOVE BACKGROUND ----------
+    "remove_bg": [],
 }
