@@ -68,7 +68,7 @@ MODEL_INFO = {
         "key": "remove_bg",
         "label": "Remove BG",
         "emoji": "🪄",
-        "replicate": "lucataco/remove-bg",
+        "replicate": "lucataco/remove-bg:95fcc2a26d3899cd6c2691c900465aaeff466285a65c14638cc5f36f34befaf1",
         "base_cost": 1,
         "pricing_text": "5 бесплатных в день, затем 1₽",
     },
