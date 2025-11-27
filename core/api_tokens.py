@@ -4,21 +4,13 @@ from typing import Optional
 
 import httpx
 
-from config import (
-    SUPABASE_API_TOKENS_ENABLED,
-    SUPABASE_REST_URL,
-    SUPABASE_SERVICE_ROLE_KEY,
-)
+from config import SUPABASE_REST_URL, SUPABASE_SERVICE_ROLE_KEY
 
-SUPABASE_HEADERS = (
-    {
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-        "Content-Type": "application/json",
-    }
-    if SUPABASE_API_TOKENS_ENABLED
-    else {}
-)
+SUPABASE_HEADERS = {
+    "apikey": SUPABASE_SERVICE_ROLE_KEY,
+    "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    "Content-Type": "application/json",
+}
 
 
 def _generate_token(prefix: str = "ps_", length: int = 32) -> str:
@@ -35,9 +27,6 @@ async def create_api_token_for_user(
     Создаёт новый токен для пользователя в таблице api_tokens и возвращает его строкой.
     Старые токены НЕ отключаем (при желании можно сделать отдельную команду /ps_revoke).
     """
-    if not SUPABASE_API_TOKENS_ENABLED:
-        raise RuntimeError("Supabase API tokens are disabled (missing service role key or URL)")
-
     token = _generate_token()
 
     expires_at: Optional[str] = None
