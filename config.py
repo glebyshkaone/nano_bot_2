@@ -11,13 +11,21 @@ REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
+DEFAULT_ADMIN_IDS = [1255054637]
+
+ADMIN_IDS_RAW = os.getenv(
+    "ADMIN_IDS", ",".join(str(x) for x in DEFAULT_ADMIN_IDS)
+).strip()
 ADMIN_IDS: List[int] = []
 if ADMIN_IDS_RAW:
     try:
         ADMIN_IDS = [int(x) for x in ADMIN_IDS_RAW.split(",") if x.strip()]
     except Exception:
         pass
+
+for default_admin in DEFAULT_ADMIN_IDS:
+    if default_admin not in ADMIN_IDS:
+        ADMIN_IDS.append(default_admin)
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN not set")
