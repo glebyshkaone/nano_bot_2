@@ -48,6 +48,36 @@ async def supabase_update_user(user_id: int, payload: Dict) -> None:
     resp.raise_for_status()
 
 
+async def supabase_update_balance_if_matches(
+    user_id: int, expected_balance: int, new_balance: int
+) -> bool:
+    """
+    Optimistic lock: update balance only if current value matches expected_balance.
+    Returns True if the row was updated.
+    """
+    params = {
+        "id": f"eq.{user_id}",
+        "balance": f"eq.{expected_balance}",
+        "select": "id,balance",
+    }
+    payload = {"balance": new_balance, "updated_at": "now()"}
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(
+            f"{SUPABASE_REST_URL}/telegram_users",
+            headers=SUPABASE_HEADERS_BASE,
+            params=params,
+            json=payload,
+            timeout=10.0,
+        )
+    resp.raise_for_status()
+    try:
+        data = resp.json()
+        return bool(data)
+    except Exception:
+        return False
+
+
 async def supabase_fetch_recent_users(limit: int = 20) -> List[Dict]:
     params = {
         "select": "id,username,first_name,last_name,balance,created_at",
@@ -153,7 +183,7 @@ async def count_generations_since(
     user_id: int,
     model: str,
     created_after_iso: str,
-) -> int:
+) -> Optional[int]:
     """Возвращает количество генераций по модели с указанной даты."""
     headers = {
         **SUPABASE_HEADERS_BASE,
@@ -178,7 +208,7 @@ async def count_generations_since(
         logger.warning(
             "Failed to count generations: %s %s", resp.status_code, resp.text
         )
-        return 0
+        return None
 
     content_range = resp.headers.get("content-range") or resp.headers.get(
         "Content-Range"
@@ -193,7 +223,7 @@ async def count_generations_since(
         data = resp.json()
         return len(data)
     except Exception:
-        return 0
+        return None
 
 
 async def fetch_generations(user_id: int, limit: int = 5) -> List[Dict]:

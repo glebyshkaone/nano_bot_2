@@ -233,6 +233,8 @@ def _today_utc_iso() -> str:
 async def get_remove_bg_free_left(user_id: int) -> int:
     model_id = MODEL_INFO["remove_bg"]["replicate"]
     used = await count_generations_since(user_id, model_id, _today_utc_iso())
+    if used is None:
+        return 0
     return max(0, FREE_REMOVE_BG_PER_DAY - used)
 
 
@@ -282,14 +284,34 @@ async def generate_with_nano_banana(
     model_key = settings.get("model", "banana")
 
     cost, free_left = await get_effective_cost(user_id, settings)
-    balance = await get_balance(user_id)
-
-    if cost > 0 and balance < cost:
+    try:
+        balance = await get_balance(user_id)
+    except Exception as e:
+        logger.exception("Не удалось получить баланс для user_id=%s", user_id)
         await update.message.reply_text(
-            f"Недостаточно токенов: нужно {cost}, у вас {balance}.\n"
-            "Пополните баланс через /buy."
+            "Не удалось получить ваш баланс. Попробуйте позже."
         )
         return
+
+    used_cost = 0
+    new_balance = balance
+    if cost > 0:
+        try:
+            ok, used_cost, new_balance = await deduct_tokens(
+                user_id, settings, override_cost=cost
+            )
+        except Exception:
+            logger.exception("Ошибка при списании токенов user_id=%s", user_id)
+            await update.message.reply_text(
+                "Не удалось списать токены. Попробуйте позже."
+            )
+            return
+        if not ok:
+            await update.message.reply_text(
+                f"Недостаточно токенов: нужно {cost}, у вас {balance}.\n"
+                "Пополните баланс через /buy."
+            )
+            return
 
     if model_key == "remove_bg" and not image_urls:
         await update.message.reply_text("Пришлите фото, чтобы удалить фон.")
@@ -303,20 +325,6 @@ async def generate_with_nano_banana(
             settings,
             image_urls=image_urls,
         )
-
-        used_cost = 0
-        new_balance = balance
-        if cost > 0:
-            ok, used_cost, new_balance = await deduct_tokens(
-                user_id, settings, override_cost=cost
-            )
-            if not ok:
-                logger.error(
-                    "Не удалось списать токены после успешной генерации "
-                    f"(user_id={user_id}, expected_cost={cost})"
-                )
-                used_cost = 0
-                new_balance = await get_balance(user_id)
 
         if img_bytes:
             bio = BytesIO(img_bytes)
@@ -341,11 +349,21 @@ async def generate_with_nano_banana(
             prompt=prompt,
             image_url=image_url,
             settings=settings,
-            tokens_spent=used_cost or cost,
+            tokens_spent=used_cost,
         )
 
     except Exception as e:
         logger.exception("Ошибка при генерации/отправке")
+        if used_cost > 0:
+            try:
+                await add_tokens(user_id, used_cost)
+                logger.info(
+                    "Refunded %s tokens to user %s after failure", used_cost, user_id
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to refund tokens after generation error for user %s", user_id
+                )
         await update.message.reply_text(
             "Произошла ошибка при генерации, токены не списаны.\n"
             f"Детали: {e}"
@@ -477,6 +495,24 @@ async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if not payload.startswith(PAYLOAD_PREFIX):
         await query.answer(ok=False, error_message="Неверный товар. Напишите @glebyshkaone.")
+        return
+
+    try:
+        tokens = int(payload[len(PAYLOAD_PREFIX):])
+    except ValueError:
+        await query.answer(ok=False, error_message="Неверный товар. Напишите @glebyshkaone.")
+        return
+
+    expected_stars = tokens_to_stars(tokens)
+    if query.currency != "XTR" or query.total_amount != expected_stars:
+        await query.answer(ok=False, error_message="Сумма счета не совпала. Попробуйте снова.")
+        logger.warning(
+            "Precheckout mismatch for user %s: currency=%s amount=%s expected=%s",
+            query.from_user.id,
+            query.currency,
+            query.total_amount,
+            expected_stars,
+        )
         return
 
     await query.answer(ok=True)

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Dict, List, Tuple, Optional
 
@@ -9,6 +10,18 @@ logger = logging.getLogger(__name__)
 
 # Инициализация клиента Replicate (если нужен)
 replicate_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
+
+
+async def _run_replicate(model_id: str, payload: Dict):
+    """
+    Replicate client is synchronous; offload to a worker thread so multiple
+    generations can progress in parallel without blocking the event loop.
+    """
+    return await asyncio.to_thread(
+        replicate_client.run,
+        model_id,
+        input=payload,
+    )
 
 
 def _extract_url_and_bytes(output) -> Tuple[Optional[str], Optional[bytes]]:
@@ -76,10 +89,7 @@ async def run_model(
             "output_format": settings.get("output_format", "jpg"),
         }
 
-        output = replicate_client.run(
-            model_id,
-            input=payload,
-        )
+        output = await _run_replicate(model_id, payload)
 
         image_url, image_bytes = _extract_url_and_bytes(output)
         if image_url is None:
@@ -98,10 +108,7 @@ async def run_model(
             "safety_filter_level": settings.get("safety_filter_level", "block_only_high"),
         }
 
-        output = replicate_client.run(
-            model_id,
-            input=payload,
-        )
+        output = await _run_replicate(model_id, payload)
 
         image_url, image_bytes = _extract_url_and_bytes(output)
         if image_url is None:
@@ -150,10 +157,7 @@ async def run_model(
             except ValueError:
                 pass
 
-        output = replicate_client.run(
-            model_id,
-            input=payload,
-        )
+        output = await _run_replicate(model_id, payload)
 
         image_url, image_bytes = _extract_url_and_bytes(output)
         if image_url is None:
@@ -170,10 +174,7 @@ async def run_model(
             "image": image_urls[0],
         }
 
-        output = replicate_client.run(
-            model_id,
-            input=payload,
-        )
+        output = await _run_replicate(model_id, payload)
 
         image_url, image_bytes = _extract_url_and_bytes(output)
         if image_url is None:
